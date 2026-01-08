@@ -1,0 +1,5 @@
+aiogram
+aiosqlite
+Pillow
+python-dotenv
+8405508314:AAG5mh-RlaLRnTc5Ss2pLGkwcssFbsTbgJY
