@@ -778,35 +778,87 @@ async def admin_team_start(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.message(AdminTeamCreate.waiting_for_name)
 async def admin_team_name(message: types.Message, state: FSMContext):
-    await message.delete() 
-    await delete_prev_bot_msg(state) 
+    # Удаляем сообщение пользователя
+    try: await message.delete() 
+    except: pass
+    
     await state.update_data(name=message.text)
-    msg = await message.answer("2️⃣ Введите короткий *ТЕГ* команды (например: `NAVI`, `C9`):", reply_markup=get_back_to_teams_kb(), parse_mode="MarkdownV2")
-    await state.update_data(last_bot_msg_id=msg.message_id)
+    
+    data = await state.get_data()
+    last_msg_id = data.get('last_bot_msg_id')
+    chat_id = message.chat.id
+    
+    # Текст следующего шага
+    text = "2️⃣ Введите короткий *ТЕГ* команды (например: `NAVI`, `C9`):"
+    
+    try:
+        # Пытаемся отредактировать старое сообщение
+        await bot.edit_message_text(text=text, chat_id=chat_id, message_id=last_msg_id, reply_markup=get_back_to_teams_kb(), parse_mode="MarkdownV2")
+    except:
+        # Если не вышло, отправляем новое и запоминаем ID
+        msg = await message.answer(text, reply_markup=get_back_to_teams_kb(), parse_mode="MarkdownV2")
+        await state.update_data(last_bot_msg_id=msg.message_id)
+        
     await state.set_state(AdminTeamCreate.waiting_for_tag)
 
 @dp.message(AdminTeamCreate.waiting_for_tag)
 async def admin_team_tag(message: types.Message, state: FSMContext):
-    await message.delete()
+    # 1. Удаляем сообщение пользователя с тегом
+    try: await message.delete()
+    except: pass
+    
     tag = message.text.strip()
+    
+    # Получаем ID предыдущего сообщения бота для редактирования
+    data = await state.get_data()
+    last_msg_id = data.get('last_bot_msg_id')
+    chat_id = message.chat.id
+
     if await check_team_exists("temp", tag):
-        await delete_prev_bot_msg(state)
-        msg = await message.answer("❌ Команда с таким тегом уже есть! Придумайте другой:", reply_markup=get_back_to_teams_kb(), parse_mode="MarkdownV2")
-        await state.update_data(last_bot_msg_id=msg.message_id)
+        text = "❌ Команда с таким тегом уже есть! Придумайте другой:"
+        # Пытаемся отредактировать старое сообщение
+        try:
+            await bot.edit_message_text(text=text, chat_id=chat_id, message_id=last_msg_id, reply_markup=get_back_to_teams_kb(), parse_mode="MarkdownV2")
+        except:
+            # Если не вышло (старое удалено), шлем новое и запоминаем ID
+            msg = await message.answer(text, reply_markup=get_back_to_teams_kb(), parse_mode="MarkdownV2")
+            await state.update_data(last_bot_msg_id=msg.message_id)
         return
-    await delete_prev_bot_msg(state)
+
     await state.update_data(tag=tag)
-    msg = await message.answer("3️⃣ Введите *состав команды* (каждый ник с новой строки):", reply_markup=get_back_to_teams_kb(), parse_mode="MarkdownV2")
-    await state.update_data(last_bot_msg_id=msg.message_id)
+    
+    # Переходим к следующему шагу: запрос состава
+    text = "3️⃣ Введите *состав команды* (каждый ник с новой строки):"
+    
+    # Пытаемся отредактировать старое сообщение
+    try:
+        await bot.edit_message_text(text=text, chat_id=chat_id, message_id=last_msg_id, reply_markup=get_back_to_teams_kb(), parse_mode="MarkdownV2")
+    except:
+        msg = await message.answer(text, reply_markup=get_back_to_teams_kb(), parse_mode="MarkdownV2")
+        await state.update_data(last_bot_msg_id=msg.message_id)
+        
     await state.set_state(AdminTeamCreate.waiting_for_roster)
 
 @dp.message(AdminTeamCreate.waiting_for_roster)
 async def admin_team_roster(message: types.Message, state: FSMContext):
-    await message.delete()
-    await delete_prev_bot_msg(state)
+    try: await message.delete()
+    except: pass
+    
     await state.update_data(roster=message.text)
-    msg = await message.answer("4️⃣ Отправьте *Логотип* команды (картинку):", reply_markup=get_back_to_teams_kb(), parse_mode="MarkdownV2")
-    await state.update_data(last_bot_msg_id=msg.message_id)
+    
+    data = await state.get_data()
+    last_msg_id = data.get('last_bot_msg_id')
+    chat_id = message.chat.id
+    
+    # Текст следующего шага
+    text = "4️⃣ Отправьте *Логотип* команды (картинку):"
+    
+    try:
+        await bot.edit_message_text(text=text, chat_id=chat_id, message_id=last_msg_id, reply_markup=get_back_to_teams_kb(), parse_mode="MarkdownV2")
+    except:
+        msg = await message.answer(text, reply_markup=get_back_to_teams_kb(), parse_mode="MarkdownV2")
+        await state.update_data(last_bot_msg_id=msg.message_id)
+        
     await state.set_state(AdminTeamCreate.waiting_for_logo)
 
 @dp.message(AdminTeamCreate.waiting_for_logo, F.photo)
@@ -849,26 +901,59 @@ async def show_teams_page(callback: types.CallbackQuery, page, state: FSMContext
 
 @dp.callback_query(F.data.startswith("view_team_"))
 async def view_specific_team(callback: types.CallbackQuery):
-    tid = int(callback.data.split("_")[-1]); team = await get_team_by_id(tid)
-    if not team: await callback.answer("Команда не найдена", show_alert=True); return
+    tid = int(callback.data.split("_")[-1])
+    team = await get_team_by_id(tid)
+    if not team: 
+        await callback.answer("Команда не найдена", show_alert=True)
+        return
     
     rank = await get_team_rank_alphabetical(team['tag'])
     roster_display = "\n".join([f"• {escape_md(p)}" for p in team['roster'].split('\n') if p.strip()])
-    info = f"🛡️ *Команда:* {escape_md(team['name'])}\n🏷 *Тег:* `{escape_md(team['tag'])}`\n📊 *Ранг:* #{rank}\n\n👥 *Состав:*\n{roster_display}"
+    
+    # ИСПРАВЛЕНИЕ: Экранируем # перед рангом -> \#
+    # Также оборачиваем rank в escape_md на всякий случай
+    info = (
+        f"🛡️ *Команда:* {escape_md(team['name'])}\n"
+        f"🏷 *Тег:* `{escape_md(team['tag'])}`\n"
+        f"📊 *Ранг:* \\#{escape_md(rank)}\n\n"
+        f"👥 *Состав:*\n{roster_display}"
+    )
     
     kb_rows = []
     if await check_is_admin(callback.from_user.id):
-        kb_rows.append([InlineKeyboardButton(text="✏️ Имя", callback_data=f"edit_team_name_{tid}"), InlineKeyboardButton(text="✏️ Тег", callback_data=f"edit_team_tag_{tid}")])
-        kb_rows.append([InlineKeyboardButton(text="👥 Состав", callback_data=f"edit_team_roster_{tid}"), InlineKeyboardButton(text="🖼️ Лого", callback_data=f"edit_team_logo_base64_{tid}")])
+        kb_rows.append([
+            InlineKeyboardButton(text="✏️ Имя", callback_data=f"edit_team_name_{tid}"), 
+            InlineKeyboardButton(text="✏️ Тег", callback_data=f"edit_team_tag_{tid}")
+        ])
+        kb_rows.append([
+            InlineKeyboardButton(text="👥 Состав", callback_data=f"edit_team_roster_{tid}"), 
+            InlineKeyboardButton(text="🖼️ Лого", callback_data=f"edit_team_logo_base64_{tid}")
+        ])
         kb_rows.append([InlineKeyboardButton(text="❌ УДАЛИТЬ", callback_data=f"del_team_confirm_{tid}")])
+        
     kb_rows.append([InlineKeyboardButton(text="🔙 К списку", callback_data="nav_teams_list")])
 
     try:
-        await safe_delete_message(callback.message.chat.id, callback.message.message_id)
-        await callback.message.answer_photo(BufferedInputFile(base64.b64decode(team['logo_base64']), filename="l.png"), caption=info, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="MarkdownV2")
+        await callback.message.delete()
+        await callback.message.answer_photo(
+            BufferedInputFile(base64.b64decode(team['logo_base64']), filename="l.png"), 
+            caption=info, 
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), 
+            parse_mode="MarkdownV2"
+        )
     except Exception as e: 
-        err_msg = escape_md(f"Ошибка отображения: {e}")
-        await callback.message.answer(err_msg + "\n\n" + info, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="MarkdownV2")
+        # Если ошибка (например, сообщение уже удалено), пробуем отправить текст
+        err_msg = escape_md(f"Ошибка: {e}")
+        # Тут мы не добавляем info, так как если info кривое, оно снова вызовет ошибку
+        if "message to delete not found" in str(e):
+             await callback.message.answer_photo(
+                 BufferedInputFile(base64.b64decode(team['logo_base64']), filename="l.png"), 
+                 caption=info, 
+                 reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), 
+                 parse_mode="MarkdownV2"
+             )
+        else:
+             await callback.message.answer(err_msg, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="MarkdownV2")
 
 @dp.callback_query(F.data.startswith("del_team_confirm_"))
 async def delete_team_handler(callback: types.CallbackQuery):
@@ -1281,7 +1366,7 @@ async def manage_tour_participants(callback: types.CallbackQuery):
     
     for i, team in enumerate(teams, 1):
         team_name = f"{team['name']} [{team['tag']}]"
-        text += f"{i}. {escape_md(team_name)}\n"
+        text += f"{i}\\. {escape_md(team_name)}\n"
         kb.append([InlineKeyboardButton(text=f"🗑 {team['tag']}", callback_data=f"remove_team_from_tour_{tid}_{team['id']}")])
     
     # Кнопки управления

@@ -27,7 +27,7 @@ class TournamentCreate(StatesGroup):
     waiting_for_group_stage = State()
     waiting_for_logo = State()
     waiting_for_prize_currency = State()
-    waiting_for_prize_total = State()
+    waiting_for_prize_distribution = State()
     waiting_for_mvp_decision = State()
     waiting_for_mvp_amount = State()
 
