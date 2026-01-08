@@ -26,8 +26,12 @@ class TournamentCreate(StatesGroup):
     waiting_for_qualifiers = State()
     waiting_for_group_stage = State()
     waiting_for_logo = State()
+
     waiting_for_prize_currency = State()
-    waiting_for_prize_distribution = State()
+    waiting_for_prize_total = State()
+    waiting_for_prize_place_name = State()
+    waiting_for_prize_place_amount = State()
+
     waiting_for_mvp_decision = State()
     waiting_for_mvp_amount = State()
 
@@ -38,19 +42,19 @@ class TourAddTeam(StatesGroup):
     waiting_for_tag = State()
 
 class TourSetWinner(StatesGroup):
-    selecting_place = State() # 1, 2, 3
+    selecting_place = State()
     selecting_team = State()
 
 # --- РЕГИСТРАЦИЯ ИГРЫ ---
 class GameRegister(StatesGroup):
     selecting_tournament = State()
-    waiting_for_format = State()    
-    waiting_for_date = State()      
-    waiting_for_map = State()       
-    waiting_for_score = State()     
-    waiting_for_team1_tag = State() 
-    waiting_for_player_stats = State() 
-    waiting_for_team2_tag = State() 
+    waiting_for_format = State()
+    waiting_for_date = State()
+    waiting_for_map = State()
+    waiting_for_score = State()
+    waiting_for_team1_tag = State()
+    waiting_for_player_stats = State()
+    waiting_for_team2_tag = State()
 
 # --- РЕДАКТИРОВАНИЕ ИГРЫ ---
 class GameEditState(StatesGroup):
@@ -60,15 +64,15 @@ class GameEditState(StatesGroup):
 
 # --- УПРАВЛЕНИЕ ИГРОКОМ ---
 class PlayerAdminState(StatesGroup):
-    waiting_for_new_name = State() 
-    waiting_for_new_nick = State() 
+    waiting_for_new_name = State()
+    waiting_for_new_nick = State()
     selecting_transfer_team = State()
 
 # --- СПИСКИ ИГР ---
 class GameListState(StatesGroup):
     selecting_tournament_for_list = State()
     viewing = State()
-    filter_date = State() 
+    filter_date = State()
 
 # --- СПИСКИ КОМАНД ---
 class TeamListState(StatesGroup):
