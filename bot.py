@@ -60,15 +60,31 @@ def escape_md_code(text):
     text = str(text)
     return text.replace('\\', '\\\\').replace('`', '\\`')
 
+async def safe_edit_or_send(callback, text, reply_markup=None, parse_mode="MarkdownV2"):
+    """Безопасно редактирует сообщение или отправляет новое с proper error handling"""
+    try:
+        await callback.message.edit_text(text, reply_markup=reply_markup, parse_mode=parse_mode)
+    except TelegramBadRequest:
+        try:
+            await callback.message.delete()
+        except:
+            pass
+        await callback.message.answer(text, reply_markup=reply_markup, parse_mode=parse_mode)
+
+async def safe_delete_message(chat_id, message_id):
+    """Безопасно удаляет сообщение с обработкой ошибок"""
+    try:
+        await bot.delete_message(chat_id, message_id)
+    except:
+        pass
+
 async def delete_prev_bot_msg(state: FSMContext):
+    """Безопасно удаляет предыдущее сообщение бота"""
     data = await state.get_data()
     msg_id = data.get('last_bot_msg_id')
     chat_id = data.get('chat_id')
     if msg_id and chat_id:
-        try:
-            await bot.delete_message(chat_id, msg_id)
-        except:
-            pass
+        await safe_delete_message(chat_id, msg_id)
 
 def calculate_player_metrics(k, a, d, rounds):
     if rounds == 0: rounds = 1
@@ -345,9 +361,13 @@ async def cmd_start(message: types.Message):
 async def nav_main(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     kb = await get_main_kb(callback.from_user.id)
-    try: await callback.message.edit_text("🏠 *Главное меню:*", reply_markup=kb, parse_mode="MarkdownV2")
+    try: 
+        await callback.message.edit_text("🏠 *Главное меню:*", reply_markup=kb, parse_mode="MarkdownV2")
     except TelegramBadRequest: 
-        await callback.message.delete()
+        try:
+            await callback.message.delete()
+        except:
+            pass
         await callback.message.answer("🏠 *Главное меню:*", reply_markup=kb, parse_mode="MarkdownV2")
 
 @dp.callback_query(F.data == "nav_profile")
@@ -357,10 +377,7 @@ async def nav_profile(callback: types.CallbackQuery):
     role = r_map.get(u['is_admin'], "Неизвестно")
     text = f"👤 *Личный кабинет*\n\n🆔 *ID:* `{u['user_id']}`\n📛 *Username:* @{escape_md(u['username'])}\n🏷 *Роль:* {escape_md(role)}"
     if u['is_admin'] > 0: text += f"\n🤝 *Добавил:* {escape_md(u['promoted_by'] if u['promoted_by'] else 'Система')}"
-    try: await callback.message.edit_text(text, reply_markup=get_back_kb(), parse_mode="MarkdownV2")
-    except TelegramBadRequest: 
-        await callback.message.delete()
-        await callback.message.answer(text, reply_markup=get_back_kb(), parse_mode="MarkdownV2")
+    await safe_edit_or_send(callback, text, reply_markup=get_back_kb())
 
 # ==========================================
 #    НОВЫЕ ПРОМЕЖУТОЧНЫЕ МЕНЮ
@@ -370,19 +387,13 @@ async def nav_profile(callback: types.CallbackQuery):
 async def menu_teams_root(callback: types.CallbackQuery):
     is_admin = await check_is_admin(callback.from_user.id)
     kb = get_sub_teams_kb(is_admin)
-    try: await callback.message.edit_text("🛡️ *Управление командами*\nВыберите действие:", reply_markup=kb, parse_mode="MarkdownV2")
-    except TelegramBadRequest:
-        await callback.message.delete()
-        await callback.message.answer("🛡️ *Управление командами*\nВыберите действие:", reply_markup=kb, parse_mode="MarkdownV2")
+    await safe_edit_or_send(callback, "🛡️ *Управление командами*\nВыберите действие:", reply_markup=kb)
 
 @dp.callback_query(F.data == "menu_tours_root")
 async def menu_tours_root(callback: types.CallbackQuery):
     is_admin = await check_is_admin(callback.from_user.id)
     kb = get_sub_tours_kb(is_admin)
-    try: await callback.message.edit_text("🏆 *Управление турнирами*\nВыберите действие:", reply_markup=kb, parse_mode="MarkdownV2")
-    except TelegramBadRequest:
-        await callback.message.delete()
-        await callback.message.answer("🏆 *Управление турнирами*\nВыберите действие:", reply_markup=kb, parse_mode="MarkdownV2")
+    await safe_edit_or_send(callback, "🏆 *Управление турнирами*\nВыберите действие:", reply_markup=kb)
 
 # ==========================================
 #    СПИСОК ИГРОКОВ (ИЗ СОСТАВОВ)
@@ -402,10 +413,7 @@ async def show_all_roster_players_page(callback: types.CallbackQuery, page):
     text = f"👥 *Список зарегистрированных игроков* \\(Всего: {count}\\)"
     kb = get_all_roster_players_kb(players, page, pages)
     
-    try: await callback.message.edit_text(text, reply_markup=kb, parse_mode="MarkdownV2")
-    except TelegramBadRequest:
-        await callback.message.delete()
-        await callback.message.answer(text, reply_markup=kb, parse_mode="MarkdownV2")
+    await safe_edit_or_send(callback, text, reply_markup=kb)
 
 # --- ПРОСМОТР ПРОФИЛЯ ИГРОКА ---
 @dp.callback_query(F.data.startswith("roster_view_"))
@@ -550,9 +558,10 @@ async def admin_transfer_start(callback: types.CallbackQuery, state: FSMContext)
         [InlineKeyboardButton(text="Перевести в команду...", callback_data="trans_team_select")],
         [InlineKeyboardButton(text="Отмена", callback_data=f"roster_view_{nick}")]
     ])
-    try: await callback.message.edit_caption(caption="🔄 Выберите тип трансфера:", reply_markup=kb)
+    try:
+        await callback.message.edit_caption(caption="🔄 Выберите тип трансфера:", reply_markup=kb)
     except: 
-        await callback.message.delete()
+        await safe_delete_message(callback.message.chat.id, callback.message.message_id)
         await callback.message.answer("🔄 Выберите тип трансфера:", reply_markup=kb)
 
 @dp.callback_query(F.data == "trans_fft")
@@ -602,9 +611,10 @@ async def show_transfer_teams_page(callback: types.CallbackQuery, page):
     if page<pages-1: nav.append(InlineKeyboardButton(text="➡️", callback_data=f"trans_page_{page+1}"))
     kb.append(nav)
     
-    try: await callback.message.edit_caption(caption="Выберите новую команду:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    try:
+        await callback.message.edit_caption(caption="Выберите новую команду:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
     except: 
-        await callback.message.delete()
+        await safe_delete_message(callback.message.chat.id, callback.message.message_id)
         await callback.message.answer("Выберите новую команду:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
 
 @dp.callback_query(F.data.startswith("trans_page_"))
@@ -675,9 +685,10 @@ async def show_top_players(callback: types.CallbackQuery):
     
     kb.append([InlineKeyboardButton(text="🔙 К списку", callback_data="nav_all_players_list")])
     
-    try: await callback.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
+    try:
+        await callback.message.edit_caption(caption=text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
     except:
-        await callback.message.delete()
+        await safe_delete_message(callback.message.chat.id, callback.message.message_id)
         await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
 
 # ==========================================
@@ -694,15 +705,14 @@ async def nav_admin(callback: types.CallbackQuery):
         kb_rows.append([InlineKeyboardButton(text="➕ Добавить Владельца", callback_data="admin_add_role_2")])
     kb_rows.append([InlineKeyboardButton(text="👥 Список персонала", callback_data="admin_list_start")])
     kb_rows.append([InlineKeyboardButton(text="🔙 В меню", callback_data="nav_main")])
-    try: await callback.message.edit_text("⚙️ *Админка*", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="MarkdownV2")
-    except TelegramBadRequest: await callback.message.delete(); await callback.message.answer("⚙️ *Админка*", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="MarkdownV2")
+    await safe_edit_or_send(callback, "⚙️ *Админка*", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
 
 @dp.callback_query(F.data.startswith("admin_add_role_"))
 async def start_add_any_admin(callback: types.CallbackQuery, state: FSMContext):
     if not await check_is_owner(callback.from_user.id): return
     role_level = int(callback.data.split("_")[-1])
     role_name = "Админа" if role_level == 1 else "Владельца"
-    await callback.message.edit_text(f"✍️ Введите *Username* нового {role_name}:", reply_markup=get_back_kb(), parse_mode="MarkdownV2")
+    await safe_edit_or_send(callback, f"✍️ Введите *Username* нового {role_name}:", reply_markup=get_back_kb())
     if role_level == 1: await state.set_state(AdminAddAdmin.waiting_for_username)
     else: await state.set_state(AdminAddOwner.waiting_for_username)
 
@@ -729,10 +739,7 @@ async def admin_list_pagination(callback: types.CallbackQuery):
 async def show_admins_page(callback: types.CallbackQuery, page):
     admins, pages, count = await get_admins_paginated(page, 5)
     text = f"👥 *Список персонала* \\(Всего: {count}\\)"
-    try: await callback.message.edit_text(text, reply_markup=get_admins_carousel_kb(admins, page, pages), parse_mode="MarkdownV2")
-    except TelegramBadRequest:
-        await callback.message.delete()
-        await callback.message.answer(text, reply_markup=get_admins_carousel_kb(admins, page, pages), parse_mode="MarkdownV2")
+    await safe_edit_or_send(callback, text, reply_markup=get_admins_carousel_kb(admins, page, pages))
 
 @dp.callback_query(F.data.startswith("view_admin_"))
 async def view_specific_admin(callback: types.CallbackQuery):
@@ -747,10 +754,7 @@ async def view_specific_admin(callback: types.CallbackQuery):
     if is_viewer_owner and target_id != viewer_id:
         kb_rows.append([InlineKeyboardButton(text="🗑 УДАЛИТЬ ИЗ ПЕРСОНАЛА", callback_data=f"del_admin_confirm_{target_id}")])
     kb_rows.append([InlineKeyboardButton(text="🔙 Назад к списку", callback_data="admin_list_start")])
-    try: await callback.message.edit_text(info, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="MarkdownV2")
-    except TelegramBadRequest:
-        await callback.message.delete()
-        await callback.message.answer(info, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="MarkdownV2")
+    await safe_edit_or_send(callback, info, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
 
 @dp.callback_query(F.data.startswith("del_admin_confirm_"))
 async def delete_admin_handler(callback: types.CallbackQuery):
@@ -837,14 +841,11 @@ async def show_teams_page(callback: types.CallbackQuery, page, state: FSMContext
     data = await state.get_data(); sort = data.get('team_sort_mode', 'tag')
     teams, pages, count = await get_teams_paginated(page, 3, sort)
     if count == 0:
-        await callback.message.edit_text("🛡️ *Список команд пуст\\.*", reply_markup=get_back_kb(), parse_mode="MarkdownV2")
+        await safe_edit_or_send(callback, "🛡️ *Список команд пуст\\.*", reply_markup=get_back_kb())
         return
     mode_text = "По Тегу" if sort == 'tag' else "По Имени"
     text = f"🛡️ *Список команд* \\(Всего: {count}\\)\n🗂 Сортировка: _{escape_md(mode_text)}_"
-    try: await callback.message.edit_text(text, reply_markup=get_teams_carousel_kb(teams, page, pages, sort), parse_mode="MarkdownV2")
-    except TelegramBadRequest: 
-        await callback.message.delete()
-        await callback.message.answer(text, reply_markup=get_teams_carousel_kb(teams, page, pages, sort), parse_mode="MarkdownV2")
+    await safe_edit_or_send(callback, text, reply_markup=get_teams_carousel_kb(teams, page, pages, sort))
 
 @dp.callback_query(F.data.startswith("view_team_"))
 async def view_specific_team(callback: types.CallbackQuery):
@@ -863,20 +864,18 @@ async def view_specific_team(callback: types.CallbackQuery):
     kb_rows.append([InlineKeyboardButton(text="🔙 К списку", callback_data="nav_teams_list")])
 
     try:
-        await callback.message.delete()
+        await safe_delete_message(callback.message.chat.id, callback.message.message_id)
         await callback.message.answer_photo(BufferedInputFile(base64.b64decode(team['logo_base64']), filename="l.png"), caption=info, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="MarkdownV2")
     except Exception as e: 
-        if "message to delete not found" in str(e):
-             await callback.message.answer_photo(BufferedInputFile(base64.b64decode(team['logo_base64']), filename="l.png"), caption=info, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="MarkdownV2")
-        else:
-             await callback.message.answer(escape_md(f"Ошибка: {e}") + "\n\n" + info, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="MarkdownV2")
+        err_msg = escape_md(f"Ошибка отображения: {e}")
+        await callback.message.answer(err_msg + "\n\n" + info, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="MarkdownV2")
 
 @dp.callback_query(F.data.startswith("del_team_confirm_"))
 async def delete_team_handler(callback: types.CallbackQuery):
     uid = callback.from_user.id
     if not await check_is_admin(uid): return
     await delete_team(int(callback.data.split("_")[-1]))
-    await callback.message.delete() 
+    await safe_delete_message(callback.message.chat.id, callback.message.message_id)
     await callback.message.answer("🗑️ Команда удалена!\nВы перемещены в главное меню.", reply_markup=await get_main_kb(uid))
 
 # Хендлеры редактирования команды
@@ -923,9 +922,8 @@ async def edit_team_finish(message: types.Message, state: FSMContext):
     await message.answer("Используйте меню, чтобы вернуться к списку.", reply_markup=get_sub_teams_kb(True))
     await state.clear()
 
-
 # ==========================================
-#    АДМИНКА: ТУРНИРЫ (СОЗДАНИЕ И РЕДАКТИРОВАНИЕ)
+#    АДМИНКА: ТУРНИРЫ (СОЗДАНИЕ И РЕДАКТИРОВАНИЕ) 
 # ==========================================
 
 @dp.callback_query(F.data == "admin_create_tournament")
@@ -980,7 +978,7 @@ async def admin_tour_qual(callback: types.CallbackQuery, state: FSMContext):
 async def admin_tour_group(callback: types.CallbackQuery, state: FSMContext):
     ans = True if "yes" in callback.data else False
     await state.update_data(has_group_stage=ans)
-    await callback.message.delete()
+    await safe_delete_message(callback.message.chat.id, callback.message.message_id)
     msg = await callback.message.answer("6️⃣ Отправьте *Логотип* турнира \\(картинку\\):", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
     await state.update_data(last_bot_msg_id=msg.message_id)
     await state.set_state(TournamentCreate.waiting_for_logo)
@@ -1006,14 +1004,58 @@ async def admin_tour_p_curr(callback: types.CallbackQuery, state: FSMContext):
         await finish_create_tournament(callback.message, state)
     else:
         await state.update_data(p_curr=curr)
-        await callback.message.edit_text(f"💰 Введите общую сумму фонда \\({curr}\\):", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
-        await state.set_state(TournamentCreate.waiting_for_prize_total)
+        await callback.message.edit_text(f"💰 Введите распределение призовых в формате:\n`Место - Сумма` \\(каждое с новой строки\\)\n\n*Пример:*\n`1 - 5000`\n`2 - 3000`\n`3-4 - 1000`\n`MVP - 500`", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
+        await state.set_state(TournamentCreate.waiting_for_prize_distribution)
 
-@dp.message(TournamentCreate.waiting_for_prize_total)
-async def admin_tour_p_total(message: types.Message, state: FSMContext):
+@dp.message(TournamentCreate.waiting_for_prize_distribution)
+async def admin_tour_p_distribution(message: types.Message, state: FSMContext):
     await message.delete()
     await delete_prev_bot_msg(state)
-    await state.update_data(p_total=message.text)
+    
+    data = await state.get_data()
+    curr = data['p_curr']
+    
+    # Парсим распределение призовых
+    distribution = {}
+    lines = message.text.strip().split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+            
+        # Формат: "место - сумма" или "место-сумма"
+        if ' - ' in line:
+            place, amount = line.split(' - ', 1)
+        elif '-' in line:
+            place, amount = line.split('-', 1)
+        else:
+            continue
+            
+        place = place.strip()
+        amount = amount.strip()
+        
+        # Проверяем, что сумма - число
+        try:
+            float(amount)
+            distribution[place] = amount
+        except ValueError:
+            msg = await message.answer("❌ Неверный формат суммы! Используйте числа.", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
+            await state.update_data(last_bot_msg_id=msg.message_id)
+            return
+    
+    if not distribution:
+        msg = await message.answer("❌ Не удалось распарсить распределение! Попробуйте снова.", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
+        await state.update_data(last_bot_msg_id=msg.message_id)
+        return
+    
+    # Сохраняем распределение
+    prize_struct = {
+        "currency": curr,
+        "distribution": distribution
+    }
+    await state.update_data(prize_data=prize_struct)
+    
     kb = get_yes_no_kb("mvp_dec")
     msg = await message.answer("⭐ Будет ли приз MVP?", reply_markup=kb, parse_mode="MarkdownV2")
     await state.update_data(last_bot_msg_id=msg.message_id)
@@ -1022,7 +1064,6 @@ async def admin_tour_p_total(message: types.Message, state: FSMContext):
 @dp.callback_query(TournamentCreate.waiting_for_mvp_decision)
 async def admin_tour_mvp_ask(callback: types.CallbackQuery, state: FSMContext):
     if "no" in callback.data:
-        await finalize_prize_data(state)
         await state.update_data(mvp_data=None)
         await finish_create_tournament(callback.message, state)
     else:
@@ -1034,37 +1075,55 @@ async def admin_tour_mvp_val(message: types.Message, state: FSMContext):
     await message.delete()
     await delete_prev_bot_msg(state)
     data = await state.get_data()
-    mvp_struct = {"amount": message.text, "currency": data['p_curr']}
-    await state.update_data(mvp_data=mvp_struct)
-    await finalize_prize_data(state)
-    await finish_create_tournament(message, state)
-
-async def finalize_prize_data(state: FSMContext):
-    d = await state.get_data()
-    p_struct = {"total": d['p_total'], "currency": d['p_curr'], "distribution": {"1st": "Winner", "2nd": "Runner-up"}} 
-    await state.update_data(prize_data=p_struct)
+    
+    try:
+        mvp_amount = float(message.text)
+        mvp_struct = {
+            "amount": str(mvp_amount),
+            "currency": data['prize_data']['currency']
+        }
+        await state.update_data(mvp_data=mvp_struct)
+        await finish_create_tournament(message, state)
+    except ValueError:
+        msg = await message.answer("❌ Введите корректное число для MVP!", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
+        await state.update_data(last_bot_msg_id=msg.message_id)
 
 async def finish_create_tournament(message: types.Message, state: FSMContext):
+    """Атомарно создает турнир с proper error handling"""
     data = await state.get_data()
-    safe_name = escape_md(data['full_name'])
-    text = f"✅ Турнир *{safe_name}* успешно создан\\!"
-    kb = await get_main_kb(message.from_user.id)
-
+    
     try:
+        # Создаем турнир в БД
         await create_tournament(
-            data['full_name'], data.get('season', ''), data['year'], data['has_qualifiers'], data['has_group_stage'],
-            data['logo_base64'], data.get('prize_data'), data.get('mvp_data')
+            data['full_name'], 
+            data.get('season', ''), 
+            data['year'], 
+            data['has_qualifiers'], 
+            data['has_group_stage'],
+            data['logo_base64'], 
+            data.get('prize_data'), 
+            data.get('mvp_data')
         )
+        
+        # Отправляем сообщение об успехе
+        safe_name = escape_md(data['full_name'])
+        text = f"✅ Турнир *{safe_name}* успешно создан\\!"
+        kb = await get_main_kb(message.from_user.id)
+        
         try:
             await message.edit_text(text, parse_mode="MarkdownV2", reply_markup=kb)
-        except Exception:
+        except:
             await message.answer(text, parse_mode="MarkdownV2", reply_markup=kb)
             
     except Exception as e:
-        err_msg = escape_md(f"Ошибка: {e}")
-        await message.answer(f"❌ {err_msg}", parse_mode="MarkdownV2")
-    
-    await state.clear()
+        # При ошибке не создаем запись в БД и показываем ошибку
+        err_msg = escape_md(f"Ошибка создания турнира: {str(e)}")
+        try:
+            await message.edit_text(f"❌ {err_msg}", parse_mode="MarkdownV2")
+        except:
+            await message.answer(f"❌ {err_msg}", parse_mode="MarkdownV2")
+    finally:
+        await state.clear()
 
 # --- ПРОСМОТР ТУРНИРОВ И УПРАВЛЕНИЕ УЧАСТНИКАМИ/ПОБЕДИТЕЛЯМИ ---
 @dp.callback_query(F.data == "nav_tournaments")
@@ -1083,14 +1142,11 @@ async def show_tours_page(callback: types.CallbackQuery, page, state: FSMContext
     data = await state.get_data(); sort = data.get('tour_sort_mode', 'alpha')
     tours, pages, count = await get_tournaments_paginated(page, 3, sort)
     if count == 0:
-        await callback.message.edit_text("🏆 *Список турниров пуст\\.*", reply_markup=get_back_kb(), parse_mode="MarkdownV2")
+        await safe_edit_or_send(callback, "🏆 *Список турниров пуст\\.*", reply_markup=get_back_kb())
         return
     mode_text = "По Алфавиту" if sort == 'alpha' else "По Году"
     text = f"🏆 *Список турниров* \\(Всего: {count}\\)\n🗂 Сортировка: _{escape_md(mode_text)}_"
-    try: await callback.message.edit_text(text, reply_markup=get_tournaments_carousel_kb(tours, page, pages, sort), parse_mode="MarkdownV2")
-    except TelegramBadRequest: 
-        await callback.message.delete()
-        await callback.message.answer(text, reply_markup=get_tournaments_carousel_kb(tours, page, pages, sort), parse_mode="MarkdownV2")
+    await safe_edit_or_send(callback, text, reply_markup=get_tournaments_carousel_kb(tours, page, pages, sort))
 
 @dp.callback_query(F.data.startswith("view_tour_"))
 async def view_specific_tour(callback: types.CallbackQuery):
@@ -1118,14 +1174,14 @@ async def view_specific_tour(callback: types.CallbackQuery):
     # Формирование строки призового фонда
     p_str = "Нет фонда"
     if pdata:
-        # Важно: экранируем валюту и значения
+        # ВАЖНО: экранируем валюту и значения
         curr = pdata.get('currency', '?')
-        total = pdata.get('total', 0)
         dist = pdata.get('distribution', {})
         
         # Генерация списка мест с экранированием ключей (например, "3-4") и значений
         pl_str = "\n".join([f"   🏅 {escape_md(k)} место: {escape_md(v)} {escape_md(curr)}" for k, v in dist.items()])
-        p_str = f"*{escape_md(total)} {escape_md(curr)}*\n{pl_str}"
+        total_amount = sum(float(v) for v in dist.values() if v.replace('.', '').isdigit())
+        p_str = f"*{escape_md(str(total_amount))} {escape_md(curr)}*\n{pl_str}"
 
     # Формирование строки MVP
     m_str = "Нет"
@@ -1170,7 +1226,7 @@ async def view_specific_tour(callback: types.CallbackQuery):
     if await check_is_admin(callback.from_user.id):
         # Кнопки управления участниками и победителями
         kb_rows.append([
-            InlineKeyboardButton(text="➕ Участники", callback_data=f"add_team_to_tour_{tid}"), 
+            InlineKeyboardButton(text="👥 Участники", callback_data=f"manage_tour_participants_{tid}"), 
             InlineKeyboardButton(text="🏆 Победители", callback_data=f"set_winner_tour_{tid}")
         ])
         kb_rows.append([
@@ -1189,7 +1245,7 @@ async def view_specific_tour(callback: types.CallbackQuery):
     kb_rows.append([InlineKeyboardButton(text="🔙 К списку", callback_data="nav_tournaments")])
     
     try:
-        await callback.message.delete()
+        await safe_delete_message(callback.message.chat.id, callback.message.message_id)
         # Отправка фото с подписью
         await callback.message.answer_photo(
             BufferedInputFile(base64.b64decode(tour['logo_base64']), filename="l.png"), 
@@ -1207,12 +1263,55 @@ async def view_specific_tour(callback: types.CallbackQuery):
             parse_mode="MarkdownV2"
         )
 
-# --- ДОБАВЛЕНИЕ УЧАСТНИКОВ В ТУРНИР ---
+# --- УПРАВЛЕНИЕ УЧАСТНИКАМИ ТУРНИРА ---
+@dp.callback_query(F.data.startswith("manage_tour_participants_"))
+async def manage_tour_participants(callback: types.CallbackQuery):
+    tid = int(callback.data.split("_")[-1])
+    
+    # Получаем участников турнира
+    teams = await get_tournament_participants(tid)
+    
+    if not teams:
+        await callback.answer("В турнире пока нет участников", show_alert=True)
+        return
+    
+    # Формируем список участников
+    text = "👥 *Участники турнира:*\n\n"
+    kb = []
+    
+    for i, team in enumerate(teams, 1):
+        team_name = f"{team['name']} [{team['tag']}]"
+        text += f"{i}. {escape_md(team_name)}\n"
+        kb.append([InlineKeyboardButton(text=f"🗑 {team['tag']}", callback_data=f"remove_team_from_tour_{tid}_{team['id']}")])
+    
+    # Кнопки управления
+    kb.append([InlineKeyboardButton(text="➕ Добавить команду", callback_data=f"add_team_to_tour_{tid}")])
+    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"view_tour_{tid}")])
+    
+    await safe_edit_or_send(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data.startswith("remove_team_from_tour_"))
+async def remove_team_from_tournament(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
+    tid = int(parts[4])
+    team_id = int(parts[5])
+    
+    from database import remove_team_from_tournament
+    success = await remove_team_from_tournament(tid, team_id)
+    
+    if success:
+        await callback.answer("✅ Команда удалена из турнира!")
+        # Возвращаемся к списку участников
+        fake_cb = types.CallbackQuery(id='0', from_user=callback.from_user, chat_instance='0', message=callback.message, data=f"manage_tour_participants_{tid}")
+        await manage_tour_participants(fake_cb)
+    else:
+        await callback.answer("❌ Ошибка при удалении команды", show_alert=True)
+
 @dp.callback_query(F.data.startswith("add_team_to_tour_"))
 async def add_tour_team_start(callback: types.CallbackQuery, state: FSMContext):
     tid = int(callback.data.split("_")[-1])
     await state.update_data(target_tour_id=tid)
-    msg = await callback.message.answer("✍️ Введите *ТЕГ* команды, которую нужно добавить в турнир:", parse_mode="MarkdownV2")
+    msg = await callback.message.answer("✍️ Введите *ТЕГ* команды, которую нужно добавить в турнир:", parse_markup=get_back_to_view_kb("manage_tour_participants", tid), parse_mode="MarkdownV2")
     await state.update_data(last_bot_msg_id=msg.message_id, chat_id=callback.message.chat.id)
     await state.set_state(TourAddTeam.waiting_for_tag)
 
@@ -1239,8 +1338,8 @@ async def add_tour_team_process(message: types.Message, state: FSMContext):
             await message.answer(f"⚠️ Команда уже участвует в этом турнире.", parse_mode="MarkdownV2")
             
     # Возврат к турниру
-    fake_cb = types.CallbackQuery(id='0', from_user=message.from_user, chat_instance='0', message=message, data=f"view_tour_{tid}")
-    await view_specific_tour(fake_cb)
+    fake_cb = types.CallbackQuery(id='0', from_user=message.from_user, chat_instance='0', message=message, data=f"manage_tour_participants_{tid}")
+    await manage_tour_participants(fake_cb)
     await state.clear()
 
 # --- ВЫБОР ПОБЕДИТЕЛЯ ТУРНИРА ---
@@ -1295,7 +1394,7 @@ async def set_tour_winner_place(callback: types.CallbackQuery, state: FSMContext
     
     kb.append([InlineKeyboardButton(text="🔙 Отмена", callback_data=f"view_tour_{tid}")])
     
-    await callback.message.edit_text(f"🏆 Выберите команду, занявшую *{place}* место:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
+    await callback.message.edit_text(f"🏆 Выберите команду, занявшую *{escape_md(place)}* место:", reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), parse_mode="MarkdownV2")
     await state.set_state(TourSetWinner.selecting_team)
 
 @dp.callback_query(F.data.startswith("confirm_winner_"))
@@ -1319,10 +1418,9 @@ async def set_tour_winner_confirm(callback: types.CallbackQuery, state: FSMConte
 async def delete_tour_handler(callback: types.CallbackQuery, state: FSMContext):
     uid = callback.from_user.id
     await delete_tournament(int(callback.data.split("_")[-1]))
-    await callback.message.delete() 
+    await safe_delete_message(callback.message.chat.id, callback.message.message_id)
     await callback.message.answer("🗑️ Турнир удален!\nВы перемещены в главное меню.", reply_markup=await get_main_kb(uid))
 
-# Хендлеры редактирования турнира
 # Хендлеры редактирования турнира
 @dp.callback_query(F.data.startswith("edit_tour_"))
 async def edit_tour_start(callback: types.CallbackQuery, state: FSMContext):
@@ -1445,7 +1543,7 @@ async def select_tour_done(callback: types.CallbackQuery, callback_data: Tournam
 async def game_reg_format(callback: types.CallbackQuery, state: FSMContext):
     fmt = callback.data.split("_")[-1] 
     await state.update_data(game_format=fmt)
-    await callback.message.delete()
+    await safe_delete_message(callback.message.chat.id, callback.message.message_id)
     
     # Отправляем сообщение и сохраняем ID для последующего редактирования
     msg = await callback.message.answer("📅 Введите *дату* игры в формате `YYYY.MM.DD`\nПример: `2024.05.20`", parse_mode="MarkdownV2")
@@ -1710,11 +1808,7 @@ async def view_game_handler(callback: types.CallbackQuery, state: FSMContext):
     
     kb_rows.append([InlineKeyboardButton(text="🔙 К списку игр", callback_data=f"list_games_{game['tournament_id']}")])
 
-    try:
-        await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="MarkdownV2")
-    except TelegramBadRequest:
-        await callback.message.delete()
-        await callback.message.answer(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows), parse_mode="MarkdownV2")
+    await safe_edit_or_send(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb_rows))
 
 @dp.callback_query(F.data.startswith("del_game_confirm_"))
 async def delete_game_handler(callback: types.CallbackQuery):
