@@ -237,6 +237,111 @@ async def get_teams_paginated(page=0, limit=3, sort_by='tag'):
     total_pages = math.ceil(total_count / limit)
     return teams, total_pages, total_count
 
+# --- ФУНКЦИИ ДЛЯ УПРАВЛЕНИЯ УЧАСТНИКАМИ ТУРНИРА ---
+async def add_team_to_tournament(tournament_id: int, team_id: int):
+    """Добавляет команду в список участников турнира"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Получаем текущих участников
+        async with db.execute('SELECT participants FROM tournaments WHERE id=?', (tournament_id,)) as cur:
+            row = await cur.fetchone()
+            if not row:
+                return False
+        
+        try:
+            participants = json.loads(row[0]) if row[0] else []
+        except:
+            participants = []
+        
+        # Проверяем, не добавлена ли уже команда
+        if team_id in participants:
+            return False
+        
+        # Добавляем команду
+        participants.append(team_id)
+        
+        # Обновляем в БД
+        await db.execute('UPDATE tournaments SET participants=? WHERE id=?', 
+                        (json.dumps(participants), tournament_id))
+        await db.commit()
+        return True
+
+async def remove_team_from_tournament(tournament_id: int, team_id: int):
+    """Удаляет команду из списка участников турнира"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        async with db.execute('SELECT participants FROM tournaments WHERE id=?', (tournament_id,)) as cur:
+            row = await cur.fetchone()
+            if not row:
+                return False
+        
+        try:
+            participants = json.loads(row[0]) if row[0] else []
+        except:
+            participants = []
+        
+        # Удаляем команду если она есть в списке
+        if team_id in participants:
+            participants.remove(team_id)
+            
+            # Обновляем в БД
+            await db.execute('UPDATE tournaments SET participants=? WHERE id=?', 
+                            (json.dumps(participants), tournament_id))
+            await db.commit()
+            return True
+        
+        return False
+
+async def get_tournament_participants(tournament_id: int):
+    """Возвращает список участников турнира с полной информацией о командах"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Получаем участников турнира
+        async with db.execute('SELECT participants FROM tournaments WHERE id=?', (tournament_id,)) as cur:
+            row = await cur.fetchone()
+            if not row:
+                return []
+        
+        try:
+            participant_ids = json.loads(row[0]) if row[0] else []
+        except:
+            participant_ids = []
+        
+        if not participant_ids:
+            return []
+        
+        # Получаем информацию о командах
+        placeholders = ','.join('?' * len(participant_ids))
+        query = f'SELECT id, name, tag FROM teams WHERE id IN ({placeholders})'
+        async with db.execute(query, participant_ids) as teams_cur:
+            teams = [dict(row) for row in await teams_cur.fetchall()]
+        
+        # Сортируем в том же порядке, что и в participants
+        teams_dict = {team['id']: team for team in teams}
+        sorted_teams = [teams_dict.get(team_id) for team_id in participant_ids if team_id in teams_dict]
+        
+        return sorted_teams
+
+async def set_tournament_winner(tournament_id: int, place: str, team_id: int):
+    """Устанавливает победителя турнира для определенного места"""
+    async with aiosqlite.connect(DB_NAME) as db:
+        # Получаем текущих победителей
+        async with db.execute('SELECT winners FROM tournaments WHERE id=?', (tournament_id,)) as cur:
+            row = await cur.fetchone()
+            if not row:
+                return False
+        
+        try:
+            winners = json.loads(row[0]) if row[0] else {}
+        except:
+            winners = {}
+        
+        # Устанавливаем победителя для места
+        winners[place] = team_id
+        
+        # Обновляем в БД
+        await db.execute('UPDATE tournaments SET winners=? WHERE id=?', 
+                        (json.dumps(winners), tournament_id))
+        await db.commit()
+        return True
+
 async def get_team_rank_alphabetical(team_tag):
     async with aiosqlite.connect(DB_NAME) as db:
         query = 'SELECT COUNT(*) FROM teams WHERE LOWER(tag) < LOWER(?)'
