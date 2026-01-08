@@ -78,6 +78,49 @@ async def safe_delete_message(chat_id, message_id):
     except:
         pass
 
+
+def format_team_tag_md(tag: str) -> str:
+    if not tag:
+        return "\\[\\]"
+    return f"\\[{escape_md(tag)}\\]"
+
+
+def format_team_name_and_tag_md(name: str, tag: str) -> str:
+    return f"{escape_md(name)} {format_team_tag_md(tag)}"
+
+
+async def try_delete_user_message(message: types.Message):
+    try:
+        await message.delete()
+    except:
+        pass
+
+
+async def fsm_edit_or_send(message: types.Message, state: FSMContext, text: str, reply_markup=None, parse_mode: str = "MarkdownV2"):
+    """Редактирует последнее сообщение бота в FSM или отправляет новое (anti-flood)."""
+    data = await state.get_data()
+    chat_id = message.chat.id
+    msg_id = data.get('last_bot_msg_id')
+
+    if msg_id:
+        try:
+            await bot.edit_message_text(
+                text=text,
+                chat_id=chat_id,
+                message_id=msg_id,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode,
+            )
+            await state.update_data(chat_id=chat_id)
+            return msg_id
+        except TelegramBadRequest:
+            pass
+
+    msg = await bot.send_message(chat_id, text, reply_markup=reply_markup, parse_mode=parse_mode)
+    await state.update_data(last_bot_msg_id=msg.message_id, chat_id=chat_id)
+    return msg.message_id
+
+
 async def delete_prev_bot_msg(state: FSMContext):
     """Безопасно удаляет предыдущее сообщение бота"""
     data = await state.get_data()
@@ -122,27 +165,44 @@ def format_game_stats(game, tournament_season=""):
     map_safe = escape_md_code(game['map_name'])
     season_safe = escape_md(tournament_season)
     
-    txt = f"⚔️ *Матч ID:* `{game['id']}`\n"
+    txt = f"⚔️ *Матч ID:* `{escape_md(game['id'])}`\n"
     if season_safe:
         txt += f"❄️ *Сезон:* {season_safe}\n"
     txt += f"📅 `{date_safe}` \\| 🗺 `{map_safe}`\n"
-    txt += f"🏆 Счет: *{game['score_t1']} : {game['score_t2']}*\n\n"
+    txt += f"🏆 Счет: *{escape_md(game['score_t1'])} : {escape_md(game['score_t2'])}*\n"
+
+    winner_line = ""
+    try:
+        s1 = int(game.get('score_t1', 0))
+        s2 = int(game.get('score_t2', 0))
+    except Exception:
+        s1 = 0
+        s2 = 0
+
+    if s1 > s2:
+        winner_line = f"🏆 *Победитель:* {format_team_tag_md(game.get('team1_tag', ''))}\n"
+    elif s2 > s1:
+        winner_line = f"🏆 *Победитель:* {format_team_tag_md(game.get('team2_tag', ''))}\n"
+    else:
+        winner_line = "🏆 *Победитель:* Ничья\n"
+
+    txt += winner_line + "\n"
 
     def draw_team_stats(tag, players):
-        res = f"🚩 *{escape_md(tag)}*\n"
-        res += "```\n" 
+        res = f"🚩 *{format_team_tag_md(tag)}*\n"
+        res += "```\n"
         res += f"{'Player':<10} {'K':>2} {'A':>2} {'D':>2} {'KD':>4} {'RTG':>4}\n"
-        res += "-"*32 + "\n"
-        
+        res += "-" * 32 + "\n"
+
         for p in players:
-            name = p.get('nickname', 'Player')[:10]
+            name = escape_md_code(p.get('nickname', 'Player')[:10])
             k = p.get('K', 0)
             a = p.get('A', 0)
             d = p.get('D', 0)
             kd = p.get('KD', 0.0)
             rtg = p.get('RATING', 0.0)
             res += f"{name:<10} {k:>2} {a:>2} {d:>2} {kd:>4} {rtg:>4}\n"
-        
+
         res += "```\n"
         return res
 
@@ -211,13 +271,24 @@ def get_yes_no_kb(prefix): return InlineKeyboardMarkup(inline_keyboard=[[InlineK
 
 def get_currency_kb(prefix):
     curs = ["RUB", "EUR", "USD", "UAH", "G", "USDT", "TON"]
-    kb = []; row = []
+    kb = []
+    row = []
     for cur in curs:
         row.append(InlineKeyboardButton(text=cur, callback_data=f"{prefix}_{cur}"))
-        if len(row)==3: kb.append(row); row=[]
-    if row: kb.append(row)
-    if prefix=="tour_fund": kb.append([InlineKeyboardButton(text="❌ НЕТУ ФОНДА", callback_data=f"{prefix}_NONE")])
+        if len(row) == 3:
+            kb.append(row)
+            row = []
+    if row:
+        kb.append(row)
+    if prefix == "tour_fund":
+        kb.append([InlineKeyboardButton(text="❌ НЕТУ ФОНДА", callback_data=f"{prefix}_NONE")])
     return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+def get_prize_finish_kb():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="✅ Завершить", callback_data="prize_finish")]]
+    )
 
 def get_format_kb():
     formats = ["5x5", "4x4", "3x3", "2x2", "1x1"]
@@ -863,15 +934,20 @@ async def admin_team_roster(message: types.Message, state: FSMContext):
 
 @dp.message(AdminTeamCreate.waiting_for_logo, F.photo)
 async def admin_team_logo(message: types.Message, state: FSMContext):
-    await message.delete()
-    await delete_prev_bot_msg(state)
+    await try_delete_user_message(message)
+
     photo = message.photo[-1]
     file_info = await bot.get_file(photo.file_id)
     downloaded_file = await bot.download_file(file_info.file_path)
     logo_base64 = base64.b64encode(downloaded_file.read()).decode('utf-8')
+
     data = await state.get_data()
     await create_team(data['name'], data['tag'], data['roster'], logo_base64)
-    await message.answer(f"✅ Команда *{escape_md(data['name'])}* \\[{escape_md(data['tag'])}\\] успешно создана\\!", parse_mode="MarkdownV2", reply_markup=await get_main_kb(message.from_user.id))
+
+    text = f"✅ Команда *{escape_md(data['name'])}* {format_team_tag_md(data['tag'])} успешно создана\\!"
+    kb = await get_main_kb(message.from_user.id)
+    await fsm_edit_or_send(message, state, text, reply_markup=kb)
+
     await state.clear()
 
 # --- ПРОСМОТР И РЕДАКТИРОВАНИЕ КОМАНД ---
@@ -914,7 +990,7 @@ async def view_specific_team(callback: types.CallbackQuery):
     # Также оборачиваем rank в escape_md на всякий случай
     info = (
         f"🛡️ *Команда:* {escape_md(team['name'])}\n"
-        f"🏷 *Тег:* `{escape_md(team['tag'])}`\n"
+        f"🏷 *Тег:* {format_team_tag_md(team['tag'])}\n"
         f"📊 *Ранг:* \\#{escape_md(rank)}\n\n"
         f"👥 *Состав:*\n{roster_display}"
     )
@@ -1013,42 +1089,58 @@ async def edit_team_finish(message: types.Message, state: FSMContext):
 
 @dp.callback_query(F.data == "admin_create_tournament")
 async def admin_tour_start(callback: types.CallbackQuery, state: FSMContext):
-    if not await check_is_admin(callback.from_user.id): return
-    msg = await callback.message.edit_text("🏆 *Создание турнира*\n\n1️⃣ Введите полное название турнира:", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
-    await state.update_data(last_bot_msg_id=msg.message_id, chat_id=callback.message.chat.id)
+    if not await check_is_admin(callback.from_user.id):
+        return
+
+    msg = await callback.message.edit_text(
+        "🏆 *Создание турнира*\n\n1️⃣ Введите полное название турнира:",
+        reply_markup=get_back_to_tours_kb(),
+        parse_mode="MarkdownV2",
+    )
+    await state.update_data(
+        last_bot_msg_id=msg.message_id,
+        chat_id=callback.message.chat.id,
+        initiator_id=callback.from_user.id,
+    )
     await state.set_state(TournamentCreate.waiting_for_tour_name)
 
 @dp.message(TournamentCreate.waiting_for_tour_name)
 async def admin_tour_name(message: types.Message, state: FSMContext):
-    await message.delete()
-    await delete_prev_bot_msg(state)
+    await try_delete_user_message(message)
     await state.update_data(full_name=message.text)
-    msg = await message.answer("2️⃣ Введите название *сезона* \\(например `Season 1`\\):", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
-    await state.update_data(last_bot_msg_id=msg.message_id)
+
+    await fsm_edit_or_send(
+        message,
+        state,
+        "2️⃣ Введите название *сезона* \\(например `Season 1`\\):",
+        reply_markup=get_back_to_tours_kb(),
+    )
     await state.set_state(TournamentCreate.waiting_for_tour_season)
 
 @dp.message(TournamentCreate.waiting_for_tour_season)
 async def admin_tour_season(message: types.Message, state: FSMContext):
-    await message.delete()
-    await delete_prev_bot_msg(state)
+    await try_delete_user_message(message)
     await state.update_data(season=message.text)
-    msg = await message.answer("3️⃣ Введите *Год* проведения \\(число\\):", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
-    await state.update_data(last_bot_msg_id=msg.message_id)
+
+    await fsm_edit_or_send(
+        message,
+        state,
+        "3️⃣ Введите *Год* проведения \\(число\\):",
+        reply_markup=get_back_to_tours_kb(),
+    )
     await state.set_state(TournamentCreate.waiting_for_year)
 
 @dp.message(TournamentCreate.waiting_for_year)
 async def admin_tour_year(message: types.Message, state: FSMContext):
-    await message.delete()
+    await try_delete_user_message(message)
+
     if not message.text.isdigit():
-        await delete_prev_bot_msg(state)
-        msg = await message.answer("❌ Введите число!", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
-        await state.update_data(last_bot_msg_id=msg.message_id)
+        await fsm_edit_or_send(message, state, "❌ Введите число!", reply_markup=get_back_to_tours_kb())
         return
-    await delete_prev_bot_msg(state)
+
     await state.update_data(year=int(message.text))
     kb = get_yes_no_kb("qualifiers")
-    msg = await message.answer("4️⃣ Есть ли Квалификации?", reply_markup=kb, parse_mode="MarkdownV2")
-    await state.update_data(last_bot_msg_id=msg.message_id)
+    await fsm_edit_or_send(message, state, "4️⃣ Есть ли Квалификации?", reply_markup=kb)
     await state.set_state(TournamentCreate.waiting_for_qualifiers)
 
 @dp.callback_query(TournamentCreate.waiting_for_qualifiers)
@@ -1056,157 +1148,280 @@ async def admin_tour_qual(callback: types.CallbackQuery, state: FSMContext):
     ans = True if "yes" in callback.data else False
     await state.update_data(has_qualifiers=ans)
     kb = get_yes_no_kb("groups")
+
     await callback.message.edit_text("5️⃣ Есть ли Групповой этап?", reply_markup=kb, parse_mode="MarkdownV2")
+    await state.update_data(last_bot_msg_id=callback.message.message_id, chat_id=callback.message.chat.id)
     await state.set_state(TournamentCreate.waiting_for_group_stage)
+
 
 @dp.callback_query(TournamentCreate.waiting_for_group_stage)
 async def admin_tour_group(callback: types.CallbackQuery, state: FSMContext):
     ans = True if "yes" in callback.data else False
     await state.update_data(has_group_stage=ans)
-    await safe_delete_message(callback.message.chat.id, callback.message.message_id)
-    msg = await callback.message.answer("6️⃣ Отправьте *Логотип* турнира \\(картинку\\):", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
-    await state.update_data(last_bot_msg_id=msg.message_id)
+
+    await callback.message.edit_text(
+        "6️⃣ Отправьте *Логотип* турнира \\(картинку\\):",
+        reply_markup=get_back_to_tours_kb(),
+        parse_mode="MarkdownV2",
+    )
+    await state.update_data(last_bot_msg_id=callback.message.message_id, chat_id=callback.message.chat.id)
     await state.set_state(TournamentCreate.waiting_for_logo)
 
 @dp.message(TournamentCreate.waiting_for_logo, F.photo)
 async def admin_tour_logo(message: types.Message, state: FSMContext):
-    await message.delete()
-    await delete_prev_bot_msg(state)
+    await try_delete_user_message(message)
+
     photo = message.photo[-1]
     file_info = await bot.get_file(photo.file_id)
     downloaded_file = await bot.download_file(file_info.file_path)
     logo_base64 = base64.b64encode(downloaded_file.read()).decode('utf-8')
     await state.update_data(logo_base64=logo_base64)
-    msg = await message.answer("💰 Выберите валюту призового фонда:", reply_markup=get_currency_kb("tour_fund"), parse_mode="MarkdownV2")
-    await state.update_data(last_bot_msg_id=msg.message_id)
+
+    await fsm_edit_or_send(
+        message,
+        state,
+        "💰 Введите валюту призового фонда (например `USD`, `RUB`) или выберите из списка:",
+        reply_markup=get_currency_kb("tour_fund"),
+    )
     await state.set_state(TournamentCreate.waiting_for_prize_currency)
+
+def _fmt_money(val: float) -> str:
+    if val.is_integer():
+        return str(int(val))
+    return f"{val:.2f}".rstrip("0").rstrip(".")
+
+
+async def _render_prize_place_prompt(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    curr = data.get('p_curr', '')
+    total = float(data.get('prize_total', 0) or 0)
+    dist = data.get('prize_distribution', [])
+
+    current_sum = sum(float(x.get('amount', 0) or 0) for x in dist)
+    remain = max(total - current_sum, 0)
+
+    lines = [
+        f"💰 Фонд: *{escape_md(_fmt_money(total))} {escape_md(curr)}*",
+        f"Распределено: *{escape_md(_fmt_money(current_sum))} {escape_md(curr)}*",
+        f"Остаток: *{escape_md(_fmt_money(remain))} {escape_md(curr)}*",
+    ]
+
+    if dist:
+        lines.append("\n📌 Уже добавлено:")
+        for idx, item in enumerate(dist, 1):
+            place = escape_md(item.get('place', ''))
+            amount = escape_md(_fmt_money(float(item.get('amount', 0) or 0)))
+            lines.append(f"{idx}\\. {place} — {amount} {escape_md(curr)}")
+
+    lines.append("\nНазвание места (например: 1 место)?")
+
+    await fsm_edit_or_send(message, state, "\n".join(lines), reply_markup=get_prize_finish_kb())
+    await state.set_state(TournamentCreate.waiting_for_prize_place_name)
+
+
+async def _finish_prize_and_ask_mvp(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    dist = data.get('prize_distribution', [])
+
+    prize_struct = {
+        "currency": data.get('p_curr'),
+        "total_fund": data.get('prize_total'),
+        "distribution": dist,
+    }
+    await state.update_data(prize_data=prize_struct)
+
+    kb = get_yes_no_kb("mvp_dec")
+    await fsm_edit_or_send(message, state, "⭐ Будет ли приз MVP?", reply_markup=kb)
+    await state.set_state(TournamentCreate.waiting_for_mvp_decision)
+
 
 @dp.callback_query(TournamentCreate.waiting_for_prize_currency)
 async def admin_tour_p_curr(callback: types.CallbackQuery, state: FSMContext):
     curr = callback.data.split("_")[-1]
+
     if curr == "NONE":
         await state.update_data(prize_data=None, mvp_data=None)
         await finish_create_tournament(callback.message, state)
-    else:
-        await state.update_data(p_curr=curr)
-        await callback.message.edit_text(f"💰 Введите распределение призовых в формате:\n`Место - Сумма` \\(каждое с новой строки\\)\n\n*Пример:*\n`1 - 5000`\n`2 - 3000`\n`3-4 - 1000`\n`MVP - 500`", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
-        await state.set_state(TournamentCreate.waiting_for_prize_distribution)
-
-@dp.message(TournamentCreate.waiting_for_prize_distribution)
-async def admin_tour_p_distribution(message: types.Message, state: FSMContext):
-    await message.delete()
-    await delete_prev_bot_msg(state)
-    
-    data = await state.get_data()
-    curr = data['p_curr']
-    
-    # Парсим распределение призовых
-    distribution = {}
-    lines = message.text.strip().split('\n')
-    
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-            
-        # Формат: "место - сумма" или "место-сумма"
-        if ' - ' in line:
-            place, amount = line.split(' - ', 1)
-        elif '-' in line:
-            place, amount = line.split('-', 1)
-        else:
-            continue
-            
-        place = place.strip()
-        amount = amount.strip()
-        
-        # Проверяем, что сумма - число
-        try:
-            float(amount)
-            distribution[place] = amount
-        except ValueError:
-            msg = await message.answer("❌ Неверный формат суммы! Используйте числа.", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
-            await state.update_data(last_bot_msg_id=msg.message_id)
-            return
-    
-    if not distribution:
-        msg = await message.answer("❌ Не удалось распарсить распределение! Попробуйте снова.", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
-        await state.update_data(last_bot_msg_id=msg.message_id)
         return
-    
-    # Сохраняем распределение
-    prize_struct = {
-        "currency": curr,
-        "distribution": distribution
-    }
-    await state.update_data(prize_data=prize_struct)
-    
-    kb = get_yes_no_kb("mvp_dec")
-    msg = await message.answer("⭐ Будет ли приз MVP?", reply_markup=kb, parse_mode="MarkdownV2")
-    await state.update_data(last_bot_msg_id=msg.message_id)
-    await state.set_state(TournamentCreate.waiting_for_mvp_decision)
+
+    await state.update_data(p_curr=curr)
+    await callback.message.edit_text(
+        "💰 Введите *Общий Призовой Фонд* (число):",
+        reply_markup=get_back_to_tours_kb(),
+        parse_mode="MarkdownV2",
+    )
+    await state.update_data(last_bot_msg_id=callback.message.message_id, chat_id=callback.message.chat.id)
+    await state.set_state(TournamentCreate.waiting_for_prize_total)
+
+
+@dp.message(TournamentCreate.waiting_for_prize_currency)
+async def admin_tour_p_curr_text(message: types.Message, state: FSMContext):
+    await try_delete_user_message(message)
+    curr = (message.text or "").strip().upper()
+
+    if not curr or len(curr) > 10:
+        await fsm_edit_or_send(message, state, "❌ Введите валюту (например `USD`) или выберите кнопкой.")
+        return
+
+    await state.update_data(p_curr=curr)
+    await fsm_edit_or_send(message, state, "💰 Введите *Общий Призовой Фонд* (число):", reply_markup=get_back_to_tours_kb())
+    await state.set_state(TournamentCreate.waiting_for_prize_total)
+
+
+@dp.message(TournamentCreate.waiting_for_prize_total)
+async def admin_tour_prize_total(message: types.Message, state: FSMContext):
+    await try_delete_user_message(message)
+
+    try:
+        total = float((message.text or "").replace(",", "."))
+    except ValueError:
+        await fsm_edit_or_send(message, state, "❌ Введите число для общего фонда.")
+        return
+
+    if total <= 0:
+        await fsm_edit_or_send(message, state, "❌ Общий фонд должен быть больше 0.")
+        return
+
+    await state.update_data(prize_total=total, prize_distribution=[])
+    await _render_prize_place_prompt(message, state)
+
+
+@dp.callback_query(TournamentCreate.waiting_for_prize_place_name, F.data == "prize_finish")
+async def admin_tour_prize_finish(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    dist = data.get('prize_distribution', [])
+
+    if not dist:
+        await callback.answer("Добавьте хотя бы одно место", show_alert=True)
+        return
+
+    await _finish_prize_and_ask_mvp(callback.message, state)
+
+
+@dp.message(TournamentCreate.waiting_for_prize_place_name)
+async def admin_tour_prize_place_name(message: types.Message, state: FSMContext):
+    await try_delete_user_message(message)
+    place = (message.text or "").strip()
+
+    if not place:
+        await _render_prize_place_prompt(message, state)
+        return
+
+    await state.update_data(prize_current_place=place)
+    await fsm_edit_or_send(
+        message,
+        state,
+        f"💰 Сумма за место *{escape_md(place)}*?",
+        reply_markup=get_back_to_tours_kb(),
+    )
+    await state.set_state(TournamentCreate.waiting_for_prize_place_amount)
+
+
+@dp.message(TournamentCreate.waiting_for_prize_place_amount)
+async def admin_tour_prize_place_amount(message: types.Message, state: FSMContext):
+    await try_delete_user_message(message)
+    data = await state.get_data()
+
+    curr = data.get('p_curr', '')
+    total = float(data.get('prize_total', 0) or 0)
+    dist = data.get('prize_distribution', [])
+    place = data.get('prize_current_place', '')
+
+    try:
+        amount = float((message.text or "").replace(",", "."))
+    except ValueError:
+        await fsm_edit_or_send(message, state, "❌ Введите число.")
+        return
+
+    if amount <= 0:
+        await fsm_edit_or_send(message, state, "❌ Сумма должна быть больше 0.")
+        return
+
+    current_sum = sum(float(x.get('amount', 0) or 0) for x in dist)
+    remain = total - current_sum
+
+    if amount > remain + 1e-9:
+        await fsm_edit_or_send(
+            message,
+            state,
+            f"❌ Сумма больше остатка\\. Осталось: *{escape_md(_fmt_money(max(remain, 0)))} {escape_md(curr)}*",
+        )
+        return
+
+    dist.append({"place": place, "amount": amount})
+    await state.update_data(prize_distribution=dist, prize_current_place=None)
+
+    if total - sum(float(x.get('amount', 0) or 0) for x in dist) <= 1e-9:
+        await _finish_prize_and_ask_mvp(message, state)
+        return
+
+    await _render_prize_place_prompt(message, state)
+
 
 @dp.callback_query(TournamentCreate.waiting_for_mvp_decision)
 async def admin_tour_mvp_ask(callback: types.CallbackQuery, state: FSMContext):
     if "no" in callback.data:
         await state.update_data(mvp_data=None)
         await finish_create_tournament(callback.message, state)
-    else:
-        await callback.message.edit_text("⭐ Введите сумму награды MVP:", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
-        await state.set_state(TournamentCreate.waiting_for_mvp_amount)
+        return
+
+    await callback.message.edit_text(
+        "⭐ Введите сумму награды MVP:",
+        reply_markup=get_back_to_tours_kb(),
+        parse_mode="MarkdownV2",
+    )
+    await state.update_data(last_bot_msg_id=callback.message.message_id, chat_id=callback.message.chat.id)
+    await state.set_state(TournamentCreate.waiting_for_mvp_amount)
+
 
 @dp.message(TournamentCreate.waiting_for_mvp_amount)
 async def admin_tour_mvp_val(message: types.Message, state: FSMContext):
-    await message.delete()
-    await delete_prev_bot_msg(state)
+    await try_delete_user_message(message)
     data = await state.get_data()
-    
+
     try:
-        mvp_amount = float(message.text)
-        mvp_struct = {
-            "amount": str(mvp_amount),
-            "currency": data['prize_data']['currency']
-        }
-        await state.update_data(mvp_data=mvp_struct)
-        await finish_create_tournament(message, state)
+        mvp_amount = float((message.text or "").replace(",", "."))
     except ValueError:
-        msg = await message.answer("❌ Введите корректное число для MVP!", reply_markup=get_back_to_tours_kb(), parse_mode="MarkdownV2")
-        await state.update_data(last_bot_msg_id=msg.message_id)
+        await fsm_edit_or_send(message, state, "❌ Введите корректное число для MVP!")
+        return
+
+    mvp_struct = {
+        "amount": str(mvp_amount),
+        "currency": (data.get('prize_data') or {}).get('currency') or data.get('p_curr', ''),
+    }
+    await state.update_data(mvp_data=mvp_struct)
+    await finish_create_tournament(message, state)
 
 async def finish_create_tournament(message: types.Message, state: FSMContext):
     """Атомарно создает турнир с proper error handling"""
     data = await state.get_data()
-    
+
+    initiator_id = data.get('initiator_id')
+    if not initiator_id and getattr(message, 'from_user', None):
+        initiator_id = message.from_user.id
+
     try:
-        # Создаем турнир в БД
         await create_tournament(
-            data['full_name'], 
-            data.get('season', ''), 
-            data['year'], 
-            data['has_qualifiers'], 
+            data['full_name'],
+            data.get('season', ''),
+            data['year'],
+            data['has_qualifiers'],
             data['has_group_stage'],
-            data['logo_base64'], 
-            data.get('prize_data'), 
-            data.get('mvp_data')
+            data['logo_base64'],
+            data.get('prize_data'),
+            data.get('mvp_data'),
         )
-        
-        # Отправляем сообщение об успехе
+
         safe_name = escape_md(data['full_name'])
         text = f"✅ Турнир *{safe_name}* успешно создан\\!"
-        kb = await get_main_kb(message.from_user.id)
-        
-        try:
-            await message.edit_text(text, parse_mode="MarkdownV2", reply_markup=kb)
-        except:
-            await message.answer(text, parse_mode="MarkdownV2", reply_markup=kb)
-            
+        kb = await get_main_kb(initiator_id) if initiator_id else get_back_kb()
+
+        await fsm_edit_or_send(message, state, text, reply_markup=kb)
+
     except Exception as e:
-        # При ошибке не создаем запись в БД и показываем ошибку
         err_msg = escape_md(f"Ошибка создания турнира: {str(e)}")
-        try:
-            await message.edit_text(f"❌ {err_msg}", parse_mode="MarkdownV2")
-        except:
-            await message.answer(f"❌ {err_msg}", parse_mode="MarkdownV2")
+        await fsm_edit_or_send(message, state, f"❌ {err_msg}")
+
     finally:
         await state.clear()
 
@@ -1259,14 +1474,37 @@ async def view_specific_tour(callback: types.CallbackQuery):
     # Формирование строки призового фонда
     p_str = "Нет фонда"
     if pdata:
-        # ВАЖНО: экранируем валюту и значения
         curr = pdata.get('currency', '?')
-        dist = pdata.get('distribution', {})
-        
-        # Генерация списка мест с экранированием ключей (например, "3-4") и значений
-        pl_str = "\n".join([f"   🏅 {escape_md(k)} место: {escape_md(v)} {escape_md(curr)}" for k, v in dist.items()])
-        total_amount = sum(float(v) for v in dist.values() if v.replace('.', '').isdigit())
-        p_str = f"*{escape_md(str(total_amount))} {escape_md(curr)}*\n{pl_str}"
+        dist_raw = pdata.get('distribution', [])
+
+        if isinstance(dist_raw, dict):
+            dist_list = [{"place": k, "amount": v} for k, v in dist_raw.items()]
+        elif isinstance(dist_raw, list):
+            dist_list = dist_raw
+        else:
+            dist_list = []
+
+        def _to_float(val):
+            try:
+                return float(str(val).replace(',', '.'))
+            except Exception:
+                return 0.0
+
+        distributed_sum = sum(_to_float(x.get('amount', 0)) for x in dist_list if isinstance(x, dict))
+        total_fund_val = pdata.get('total_fund')
+        total_fund = _to_float(total_fund_val) if total_fund_val is not None else distributed_sum
+
+        lines = []
+        for item in dist_list:
+            if not isinstance(item, dict):
+                continue
+            place = escape_md(item.get('place', ''))
+            amount = escape_md(_fmt_money(_to_float(item.get('amount', 0))))
+            lines.append(f"   🏅 {place}: {amount} {escape_md(curr)}")
+
+        p_str = f"*{escape_md(_fmt_money(total_fund))} {escape_md(curr)}*"
+        if lines:
+            p_str += "\n" + "\n".join(lines)
 
     # Формирование строки MVP
     m_str = "Нет"
@@ -1349,82 +1587,140 @@ async def view_specific_tour(callback: types.CallbackQuery):
         )
 
 # --- УПРАВЛЕНИЕ УЧАСТНИКАМИ ТУРНИРА ---
+
+async def build_participants_menu(tid: int):
+    teams = await get_tournament_participants(tid)
+
+    text = "👥 *Участники турнира:*\n\n"
+    if teams:
+        for i, team in enumerate(teams, 1):
+            text += f"{i}\\. {format_team_name_and_tag_md(team['name'], team['tag'])}\n"
+    else:
+        text += "▫️ Нет участников\n"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="➕ Добавить", callback_data=f"tour_parts_add_{tid}"),
+                InlineKeyboardButton(text="🗑 Удалить", callback_data=f"tour_parts_del_{tid}"),
+            ],
+            [InlineKeyboardButton(text="🔙 Назад", callback_data=f"view_tour_{tid}")],
+        ]
+    )
+    return text, kb
+
+
+async def build_participants_delete_menu(tid: int):
+    teams = await get_tournament_participants(tid)
+
+    text = "🗑 *Удаление участников*\n\n"
+    if teams:
+        text += "Выберите команду для удаления:\n"
+    else:
+        text += "Нет участников для удаления\\.\n"
+
+    kb_rows = []
+    for team in teams:
+        kb_rows.append(
+            [
+                InlineKeyboardButton(
+                    text=f"🗑 {team['tag']}",
+                    callback_data=f"tour_parts_remove_{tid}_{team['id']}",
+                )
+            ]
+        )
+
+    kb_rows.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"manage_tour_participants_{tid}")])
+    return text, InlineKeyboardMarkup(inline_keyboard=kb_rows)
+
+
 @dp.callback_query(F.data.startswith("manage_tour_participants_"))
 async def manage_tour_participants(callback: types.CallbackQuery):
     tid = int(callback.data.split("_")[-1])
-    
-    # Получаем участников турнира
-    teams = await get_tournament_participants(tid)
-    
-    if not teams:
-        await callback.answer("В турнире пока нет участников", show_alert=True)
-        return
-    
-    # Формируем список участников
-    text = "👥 *Участники турнира:*\n\n"
-    kb = []
-    
-    for i, team in enumerate(teams, 1):
-        team_name = f"{team['name']} [{team['tag']}]"
-        text += f"{i}\\. {escape_md(team_name)}\n"
-        kb.append([InlineKeyboardButton(text=f"🗑 {team['tag']}", callback_data=f"remove_team_from_tour_{tid}_{team['id']}")])
-    
-    # Кнопки управления
-    kb.append([InlineKeyboardButton(text="➕ Добавить команду", callback_data=f"add_team_to_tour_{tid}")])
-    kb.append([InlineKeyboardButton(text="🔙 Назад", callback_data=f"view_tour_{tid}")])
-    
-    await safe_edit_or_send(callback, text, reply_markup=InlineKeyboardMarkup(inline_keyboard=kb))
+    text, kb = await build_participants_menu(tid)
+    await safe_edit_or_send(callback, text, reply_markup=kb)
 
-@dp.callback_query(F.data.startswith("remove_team_from_tour_"))
-async def remove_team_from_tournament(callback: types.CallbackQuery):
+
+@dp.callback_query(F.data.startswith("tour_parts_del_"))
+async def manage_tour_participants_delete_menu(callback: types.CallbackQuery):
+    tid = int(callback.data.split("_")[-1])
+    text, kb = await build_participants_delete_menu(tid)
+    await safe_edit_or_send(callback, text, reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("tour_parts_remove_"))
+async def remove_team_from_tour(callback: types.CallbackQuery):
     parts = callback.data.split("_")
-    tid = int(parts[4])
-    team_id = int(parts[5])
-    
+    tid = int(parts[3])
+    team_id = int(parts[4])
+
     from database import remove_team_from_tournament
     success = await remove_team_from_tournament(tid, team_id)
-    
-    if success:
-        await callback.answer("✅ Команда удалена из турнира!")
-        # Возвращаемся к списку участников
-        fake_cb = types.CallbackQuery(id='0', from_user=callback.from_user, chat_instance='0', message=callback.message, data=f"manage_tour_participants_{tid}")
-        await manage_tour_participants(fake_cb)
-    else:
-        await callback.answer("❌ Ошибка при удалении команды", show_alert=True)
 
-@dp.callback_query(F.data.startswith("add_team_to_tour_"))
+    if success:
+        await callback.answer("✅ Команда удалена!")
+    else:
+        await callback.answer("❌ Ошибка при удалении", show_alert=True)
+
+    text, kb = await build_participants_delete_menu(tid)
+    await safe_edit_or_send(callback, text, reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("tour_parts_add_"))
 async def add_tour_team_start(callback: types.CallbackQuery, state: FSMContext):
     tid = int(callback.data.split("_")[-1])
-    await state.update_data(target_tour_id=tid)
-    msg = await callback.message.answer("✍️ Введите *ТЕГ* команды, которую нужно добавить в турнир:", parse_markup=get_back_to_view_kb("manage_tour_participants", tid), parse_mode="MarkdownV2")
-    await state.update_data(last_bot_msg_id=msg.message_id, chat_id=callback.message.chat.id)
+
+    await state.update_data(
+        target_tour_id=tid,
+        initiator_id=callback.from_user.id,
+        last_bot_msg_id=callback.message.message_id,
+        chat_id=callback.message.chat.id,
+    )
+
+    await callback.message.edit_text(
+        "✍️ Введите *ТЕГ* команды, которую нужно добавить в турнир:",
+        reply_markup=get_back_to_view_kb("manage_tour_participants", tid),
+        parse_mode="MarkdownV2",
+    )
     await state.set_state(TourAddTeam.waiting_for_tag)
+
 
 @dp.message(TourAddTeam.waiting_for_tag)
 async def add_tour_team_process(message: types.Message, state: FSMContext):
-    await message.delete()
-    await delete_prev_bot_msg(state)
-    
-    tag = message.text.strip()
+    await try_delete_user_message(message)
+
+    tag = (message.text or "").strip()
     data = await state.get_data()
     tid = data['target_tour_id']
-    
-    # Ищем команду
+
     from database import get_team_by_tag, add_team_to_tournament
     team = await get_team_by_tag(tag)
-    
+
     if not team:
-        await message.answer(f"❌ Команда с тегом `{escape_md(tag)}` не найдена в базе данных\\. Проверьте тег или зарегистрируйте команду\\.", parse_mode="MarkdownV2")
+        await fsm_edit_or_send(
+            message,
+            state,
+            f"❌ Команда {format_team_tag_md(tag)} не найдена в базе данных\\. Проверьте тег или зарегистрируйте команду\\.",
+            reply_markup=get_back_to_view_kb("manage_tour_participants", tid),
+        )
+        return
+
+    success = await add_team_to_tournament(tid, team['id'])
+    if not success:
+        await fsm_edit_or_send(
+            message,
+            state,
+            f"⚠️ Команда {format_team_name_and_tag_md(team['name'], team['tag'])} уже участвует в этом турнире\\.",
+        )
     else:
-        success = await add_team_to_tournament(tid, team['id'])
-        if success:
-            await message.answer(f"✅ Команда *{escape_md(team['name'])}* добавлена в турнир!", parse_mode="MarkdownV2")
-        else:
-            await message.answer(f"⚠️ Команда уже участвует в этом турнире.", parse_mode="MarkdownV2")
-            
-    # Возврат к турниру
-    fake_cb = types.CallbackQuery(id='0', from_user=message.from_user, chat_instance='0', message=message, data=f"manage_tour_participants_{tid}")
-    await manage_tour_participants(fake_cb)
+        await fsm_edit_or_send(
+            message,
+            state,
+            f"✅ Команда {format_team_name_and_tag_md(team['name'], team['tag'])} добавлена в турнир\\!",
+        )
+
+    text, kb = await build_participants_menu(tid)
+    await fsm_edit_or_send(message, state, text, reply_markup=kb)
     await state.clear()
 
 # --- ВЫБОР ПОБЕДИТЕЛЯ ТУРНИРА ---
@@ -1441,15 +1737,24 @@ async def set_tour_winner_start(callback: types.CallbackQuery, state: FSMContext
         try: prize_data = json.loads(tour['prize_data'])
         except: pass
     
-    dist = prize_data.get('distribution', {})
-    
+    dist_raw = prize_data.get('distribution', {})
+
+    places: list[str] = []
+    if isinstance(dist_raw, dict):
+        places = [str(k) for k in dist_raw.keys()]
+    elif isinstance(dist_raw, list):
+        for item in dist_raw:
+            if isinstance(item, dict) and item.get('place'):
+                places.append(str(item['place']))
+
+    seen = set()
+    places = [p for p in places if not (p in seen or seen.add(p))]
+
     kb = []
-    # Если есть распределение призов, создаем кнопки по ключам (1st, 2nd...)
-    if dist:
-        for place in dist.keys():
-             kb.append([InlineKeyboardButton(text=f"🏅 {place}", callback_data=f"win_place_{place}")])
+    if places:
+        for place in places:
+            kb.append([InlineKeyboardButton(text=f"🏅 {place}", callback_data=f"win_place_{place}")])
     else:
-        # Стандартные кнопки
         kb.append([InlineKeyboardButton(text="🥇 1 Место", callback_data="win_place_1st")])
         kb.append([InlineKeyboardButton(text="🥈 2 Место", callback_data="win_place_2nd")])
         kb.append([InlineKeyboardButton(text="🥉 3 Место", callback_data="win_place_3rd")])
@@ -1572,7 +1877,13 @@ async def start_tournament_selection(callback: types.CallbackQuery, state: FSMCo
     if not tours:
         await callback.answer("Нет активных турниров!", show_alert=True)
         return
-    await state.update_data(tournaments_cache=tours)
+
+    await state.update_data(
+        tournaments_cache=tours,
+        initiator_id=callback.from_user.id,
+        last_bot_msg_id=callback.message.message_id,
+        chat_id=callback.message.chat.id,
+    )
     await show_tour_select_page(callback, 0, state)
     await state.set_state(next_state_obj)
 
@@ -1626,30 +1937,32 @@ async def select_tour_done(callback: types.CallbackQuery, callback_data: Tournam
 
 @dp.callback_query(GameRegister.waiting_for_format)
 async def game_reg_format(callback: types.CallbackQuery, state: FSMContext):
-    fmt = callback.data.split("_")[-1] 
+    fmt = callback.data.split("_")[-1]
     await state.update_data(game_format=fmt)
-    await safe_delete_message(callback.message.chat.id, callback.message.message_id)
-    
-    # Отправляем сообщение и сохраняем ID для последующего редактирования
-    msg = await callback.message.answer("📅 Введите *дату* игры в формате `YYYY.MM.DD`\nПример: `2024.05.20`", parse_mode="MarkdownV2")
-    await state.update_data(last_bot_msg_id=msg.message_id, chat_id=callback.message.chat.id)
+
+    await callback.message.edit_text(
+        "📅 Введите *дату* игры в формате `YYYY.MM.DD`\nПример: `2024.05.20`",
+        parse_mode="MarkdownV2",
+    )
+    await state.update_data(last_bot_msg_id=callback.message.message_id, chat_id=callback.message.chat.id)
     await state.set_state(GameRegister.waiting_for_date)
 
 @dp.message(GameRegister.waiting_for_date)
 async def game_reg_date(message: types.Message, state: FSMContext):
-    await message.delete() # Удаляем сообщение пользователя
-    if len(message.text) < 8:
-        # При ошибке редактируем предыдущее сообщение бота
-        await delete_prev_bot_msg(state) 
-        msg = await message.answer("❌ Неверный формат даты\\! Попробуйте еще раз:", parse_mode="MarkdownV2")
-        await state.update_data(last_bot_msg_id=msg.message_id)
+    await try_delete_user_message(message)
+
+    if not message.text or len(message.text) < 8:
+        await fsm_edit_or_send(message, state, "❌ Неверный формат даты\\! Попробуйте еще раз:")
         return
-    
-    await delete_prev_bot_msg(state) # Удаляем вопрос про дату
+
     await state.update_data(game_date=message.text)
-    
-    msg = await message.answer("3️⃣ Выберите *карту*:", reply_markup=get_map_select_kb(mode="reg"), parse_mode="MarkdownV2")
-    await state.update_data(last_bot_msg_id=msg.message_id)
+
+    await fsm_edit_or_send(
+        message,
+        state,
+        "3️⃣ Выберите *карту*:",
+        reply_markup=get_map_select_kb(mode="reg"),
+    )
     await state.set_state(GameRegister.waiting_for_map)
 
 # ОБРАБОТЧИК КНОПОК КАРТЫ ПРИ РЕГИСТРАЦИИ
@@ -1667,51 +1980,50 @@ async def game_reg_map_btn(callback: types.CallbackQuery, state: FSMContext):
 # ОБРАБОТЧИК СЧЕТА
 @dp.message(GameRegister.waiting_for_score)
 async def game_reg_score(message: types.Message, state: FSMContext):
-    await message.delete()
+    await try_delete_user_message(message)
+
     try:
-        parts = message.text.split('-')
-        if len(parts) != 2: raise ValueError
+        parts = (message.text or "").split('-')
+        if len(parts) != 2:
+            raise ValueError
         s1, s2 = map(int, parts)
         rounds = s1 + s2
         await state.update_data(s1=s1, s2=s2, rounds=rounds)
-        
-        await delete_prev_bot_msg(state)
-        msg = await message.answer(f"✅ Счет: {s1}:{s2}\n\n4️⃣ Введите *ТЕГ* первой команды \\(команда должна быть зарегистрирована\\):", parse_mode="MarkdownV2")
-        await state.update_data(last_bot_msg_id=msg.message_id)
+
+        await fsm_edit_or_send(
+            message,
+            state,
+            f"✅ Счет: {escape_md(s1)}:{escape_md(s2)}\n\n4️⃣ Введите *ТЕГ* первой команды \\(команда должна быть зарегистрирована\\):",
+        )
         await state.set_state(GameRegister.waiting_for_team1_tag)
-    except:
-        await delete_prev_bot_msg(state)
-        msg = await message.answer("❌ Ошибка формата\\! Используйте: `13-11`", parse_mode="MarkdownV2")
-        await state.update_data(last_bot_msg_id=msg.message_id)
+
+    except Exception:
+        await fsm_edit_or_send(message, state, "❌ Ошибка формата\\! Используйте: `13-11`")
 
 @dp.message(GameRegister.waiting_for_team1_tag)
 async def game_reg_t1_tag(message: types.Message, state: FSMContext):
-    await message.delete()
-    tag = message.text.strip()
+    await try_delete_user_message(message)
+    tag = (message.text or "").strip()
     team = await get_team_by_tag(tag)
-    
+
     if not team:
-        await delete_prev_bot_msg(state)
-        msg = await message.answer("❌ Команда не найдена\\! Введите существующий тег:", parse_mode="MarkdownV2")
-        await state.update_data(last_bot_msg_id=msg.message_id)
+        await fsm_edit_or_send(message, state, f"❌ Команда {format_team_tag_md(tag)} не найдена\\! Введите существующий тег:")
         return
 
     roster_raw = team['roster']
     roster_list = [name.strip() for name in roster_raw.split('\n') if name.strip()]
     if not roster_list:
-        await delete_prev_bot_msg(state)
-        msg = await message.answer("❌ У этой команды пустой состав\\!", parse_mode="MarkdownV2")
-        await state.update_data(last_bot_msg_id=msg.message_id)
+        await fsm_edit_or_send(message, state, f"❌ У команды {format_team_tag_md(tag)} пустой состав\\!")
         return
 
     await state.update_data(
         t1_tag=tag,
         current_roster=roster_list,
         current_team_idx=1,
-        current_stats=[], 
-        current_player_idx=0
+        current_stats=[],
+        current_player_idx=0,
     )
-    # Тут мы не удаляем сообщение, а редактируем его в ask_next_player_stats
+
     await ask_next_player_stats(message, state)
 
 async def ask_next_player_stats(message: types.Message, state: FSMContext):
@@ -1765,7 +2077,7 @@ async def process_player_dnp(callback: types.CallbackQuery, state: FSMContext):
 
 @dp.message(GameRegister.waiting_for_player_stats)
 async def process_player_stats_text(message: types.Message, state: FSMContext):
-    await message.delete() # Удаляем ответ юзера
+    await try_delete_user_message(message)
     try:
         parts = message.text.split()
         if len(parts) != 3:
@@ -1796,70 +2108,96 @@ async def process_player_stats_text(message: types.Message, state: FSMContext):
 
 @dp.message(GameRegister.waiting_for_team2_tag)
 async def game_reg_t2_tag(message: types.Message, state: FSMContext):
-    await message.delete()
-    tag = message.text.strip()
+    await try_delete_user_message(message)
+    tag = (message.text or "").strip()
     data = await state.get_data()
-    
-    # Получаем ID для редактирования
+
     msg_id = data.get('last_bot_msg_id')
     chat_id = message.chat.id
 
-    if tag.lower() == data['t1_tag'].lower():
-        try: await bot.edit_message_text(text="❌ Команды должны быть разными\\! Введите другой тег:", chat_id=chat_id, message_id=msg_id, parse_mode="MarkdownV2")
-        except: pass
+    if tag.lower() == (data.get('t1_tag') or "").lower():
+        try:
+            await bot.edit_message_text(
+                text=f"❌ Команды должны быть разными\\! Вы ввели {format_team_tag_md(tag)} — введите другой тег:",
+                chat_id=chat_id,
+                message_id=msg_id,
+                parse_mode="MarkdownV2",
+            )
+        except:
+            pass
         return
 
     team = await get_team_by_tag(tag)
     if not team:
-        try: await bot.edit_message_text(text="❌ Команда не найдена\\! Введите существующий тег:", chat_id=chat_id, message_id=msg_id, parse_mode="MarkdownV2")
-        except: pass
+        try:
+            await bot.edit_message_text(
+                text=f"❌ Команда {format_team_tag_md(tag)} не найдена\\! Введите существующий тег:",
+                chat_id=chat_id,
+                message_id=msg_id,
+                parse_mode="MarkdownV2",
+            )
+        except:
+            pass
         return
 
     roster_list = [name.strip() for name in team['roster'].split('\n') if name.strip()]
     if not roster_list:
-        try: await bot.edit_message_text(text="❌ Пустой состав\\!", chat_id=chat_id, message_id=msg_id, parse_mode="MarkdownV2")
-        except: pass
+        try:
+            await bot.edit_message_text(
+                text=f"❌ У команды {format_team_tag_md(tag)} пустой состав\\!",
+                chat_id=chat_id,
+                message_id=msg_id,
+                parse_mode="MarkdownV2",
+            )
+        except:
+            pass
         return
 
     await state.update_data(
         t2_tag=tag,
         current_roster=roster_list,
         current_team_idx=2,
-        current_stats=[], 
-        current_player_idx=0
+        current_stats=[],
+        current_player_idx=0,
     )
     await ask_next_player_stats(message, state)
 
 async def finish_game_registration(message: types.Message, state: FSMContext):
     data = await state.get_data()
     full_stats = {data['t1_tag']: data['t1_stats_final'], data['t2_tag']: data['current_stats']}
-    
-    # Удаляем последнее сообщение бота (форма ввода)
-    await delete_prev_bot_msg(state)
-    
+
+    initiator_id = data.get('initiator_id')
+    if not initiator_id and getattr(message, 'from_user', None):
+        initiator_id = message.from_user.id
+
     try:
         game_id = await add_game_record(
-            data['reg_game_tour_id'], 
+            data['reg_game_tour_id'],
             data['game_date'],
             data['game_format'],
-            data['map_name'], 
-            data['t1_tag'], 
-            data['t2_tag'], 
-            data['s1'], 
-            data['s2'], 
-            data['rounds'], 
-            full_stats
+            data['map_name'],
+            data['t1_tag'],
+            data['t2_tag'],
+            data['s1'],
+            data['s2'],
+            data['rounds'],
+            full_stats,
         )
-        
+
         formatted_id = f"{game_id:09}"
-        await message.answer(
-            f"✅ *Игра успешно сохранена\\!*\n🆔 ID: `{formatted_id}`\n📅 {escape_md(data['game_date'])}\n🗺 {escape_md(data['map_name'])} \\({data['s1']}:{data['s2']}\\)", 
-            reply_markup=await get_main_kb(message.from_user.id), 
-            parse_mode="MarkdownV2"
+        text = (
+            f"✅ *Игра успешно сохранена\\!*\n"
+            f"🆔 ID: `{escape_md(formatted_id)}`\n"
+            f"📅 {escape_md(data['game_date'])}\n"
+            f"🗺 {escape_md(data['map_name'])} \\({escape_md(data['s1'])}:{escape_md(data['s2'])}\\)\n"
+            f"⚔️ {format_team_tag_md(data['t1_tag'])} vs {format_team_tag_md(data['t2_tag'])}"
         )
+        kb = await get_main_kb(initiator_id) if initiator_id else get_back_kb()
+        await fsm_edit_or_send(message, state, text, reply_markup=kb)
+
     except Exception as e:
-        await message.answer(f"❌ Ошибка сохранения: {escape_md(str(e))}", parse_mode="MarkdownV2")
-    
+        await fsm_edit_or_send(message, state, f"❌ Ошибка сохранения: {escape_md(str(e))}")
+
     await state.clear()
 
 # ==========================================

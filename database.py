@@ -15,7 +15,7 @@ async def init_db():
                 promoted_by TEXT DEFAULT NULL
             )
         ''')
-        
+
         # 2. Команды
         await db.execute('''
             CREATE TABLE IF NOT EXISTS teams (
@@ -23,26 +23,26 @@ async def init_db():
                 name TEXT,
                 tag TEXT,
                 rank INTEGER DEFAULT 0,
-                roster TEXT, 
+                roster TEXT,
                 logo_base64 TEXT,
-                games_ids TEXT, 
-                achievements TEXT 
+                games_ids TEXT,
+                achievements TEXT
             )
         ''')
-        
+
         # 3. Турниры
         await db.execute('''
             CREATE TABLE IF NOT EXISTS tournaments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 full_name TEXT,
-                season TEXT, 
+                season TEXT,
                 year INTEGER DEFAULT 2024,
                 has_qualifiers BOOLEAN,
                 has_group_stage BOOLEAN,
                 logo_base64 TEXT,
-                prize_data TEXT, 
-                mvp_data TEXT,   
-                participants TEXT, 
+                prize_data TEXT,
+                mvp_data TEXT,
+                participants TEXT,
                 winners TEXT,
                 is_active BOOLEAN DEFAULT 1
             )
@@ -102,7 +102,7 @@ async def init_db():
         except: pass
         try: await db.execute("ALTER TABLE games ADD COLUMN game_format TEXT")
         except: pass
-        
+
         await db.commit()
 
     await ensure_fft_team()
@@ -120,9 +120,9 @@ async def add_user(user_id, username):
     sys_promo = "SYSTEM" if role == 2 else None
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute('''
-            INSERT INTO users (user_id, username, is_admin, promoted_by) 
+            INSERT INTO users (user_id, username, is_admin, promoted_by)
             VALUES (?, ?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET 
+            ON CONFLICT(user_id) DO UPDATE SET
                 username=excluded.username,
                 is_admin = CASE WHEN username = 'matvei_dev' THEN 2 ELSE is_admin END,
                 promoted_by = CASE WHEN username = 'matvei_dev' AND promoted_by IS NULL THEN 'SYSTEM' ELSE promoted_by END
@@ -199,7 +199,7 @@ async def get_team_by_tag(tag):
 async def create_team(name, tag, roster, logo_base64):
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute('''
-            INSERT INTO teams (name, tag, rank, roster, logo_base64, games_ids, achievements) 
+            INSERT INTO teams (name, tag, rank, roster, logo_base64, games_ids, achievements)
             VALUES (?, ?, 0, ?, ?, "[]", "[]")
         ''', (name, tag, roster, logo_base64))
         await db.commit()
@@ -246,21 +246,21 @@ async def add_team_to_tournament(tournament_id: int, team_id: int):
             row = await cur.fetchone()
             if not row:
                 return False
-        
+
         try:
             participants = json.loads(row[0]) if row[0] else []
         except:
             participants = []
-        
+
         # Проверяем, не добавлена ли уже команда
         if team_id in participants:
             return False
-        
+
         # Добавляем команду
         participants.append(team_id)
-        
+
         # Обновляем в БД
-        await db.execute('UPDATE tournaments SET participants=? WHERE id=?', 
+        await db.execute('UPDATE tournaments SET participants=? WHERE id=?',
                         (json.dumps(participants), tournament_id))
         await db.commit()
         return True
@@ -272,22 +272,22 @@ async def remove_team_from_tournament(tournament_id: int, team_id: int):
             row = await cur.fetchone()
             if not row:
                 return False
-        
+
         try:
             participants = json.loads(row[0]) if row[0] else []
         except:
             participants = []
-        
+
         # Удаляем команду если она есть в списке
         if team_id in participants:
             participants.remove(team_id)
-            
+
             # Обновляем в БД
-            await db.execute('UPDATE tournaments SET participants=? WHERE id=?', 
+            await db.execute('UPDATE tournaments SET participants=? WHERE id=?',
                             (json.dumps(participants), tournament_id))
             await db.commit()
             return True
-        
+
         return False
 
 async def get_tournament_participants(tournament_id: int):
@@ -298,25 +298,25 @@ async def get_tournament_participants(tournament_id: int):
             row = await cur.fetchone()
             if not row:
                 return []
-        
+
         try:
             participant_ids = json.loads(row[0]) if row[0] else []
         except:
             participant_ids = []
-        
+
         if not participant_ids:
             return []
-        
+
         # Получаем информацию о командах
         placeholders = ','.join('?' * len(participant_ids))
         query = f'SELECT id, name, tag FROM teams WHERE id IN ({placeholders})'
         async with db.execute(query, participant_ids) as teams_cur:
             teams = [dict(row) for row in await teams_cur.fetchall()]
-        
+
         # Сортируем в том же порядке, что и в participants
         teams_dict = {team['id']: team for team in teams}
         sorted_teams = [teams_dict.get(team_id) for team_id in participant_ids if team_id in teams_dict]
-        
+
         return sorted_teams
 
 async def set_tournament_winner(tournament_id: int, place: str, team_id: int):
@@ -327,17 +327,17 @@ async def set_tournament_winner(tournament_id: int, place: str, team_id: int):
             row = await cur.fetchone()
             if not row:
                 return False
-        
+
         try:
             winners = json.loads(row[0]) if row[0] else {}
         except:
             winners = {}
-        
+
         # Устанавливаем победителя для места
         winners[place] = team_id
-        
+
         # Обновляем в БД
-        await db.execute('UPDATE tournaments SET winners=? WHERE id=?', 
+        await db.execute('UPDATE tournaments SET winners=? WHERE id=?',
                         (json.dumps(winners), tournament_id))
         await db.commit()
         return True
@@ -357,13 +357,13 @@ async def update_player_metadata(nickname, first_name=None, last_name=None, phot
     async with aiosqlite.connect(DB_NAME) as db:
         async with db.execute('SELECT nickname FROM player_metadata WHERE nickname = ?', (nickname,)) as cur:
             exists = await cur.fetchone()
-        
+
         if exists:
             if first_name is not None: await db.execute('UPDATE player_metadata SET first_name=? WHERE nickname=?', (first_name, nickname))
             if last_name is not None: await db.execute('UPDATE player_metadata SET last_name=? WHERE nickname=?', (last_name, nickname))
             if photo_id is not None: await db.execute('UPDATE player_metadata SET photo_file_id=? WHERE nickname=?', (photo_id, nickname))
         else:
-            await db.execute('INSERT INTO player_metadata (nickname, first_name, last_name, photo_file_id) VALUES (?, ?, ?, ?)', 
+            await db.execute('INSERT INTO player_metadata (nickname, first_name, last_name, photo_file_id) VALUES (?, ?, ?, ?)',
                              (nickname, first_name or "", last_name or "", photo_id))
         await db.commit()
 
@@ -380,7 +380,7 @@ async def perform_player_transfer(player_nickname, old_team_id, new_team_id, dat
             old_team_row = await cur.fetchone()
         async with db.execute('SELECT id, roster, name, tag FROM teams WHERE id=?', (new_team_id,)) as cur:
             new_team_row = await cur.fetchone()
-            
+
         if not old_team_row or not new_team_row:
             return False, "Команда не найдена"
 
@@ -388,7 +388,7 @@ async def perform_player_transfer(player_nickname, old_team_id, new_team_id, dat
         if player_nickname in old_roster:
             old_roster.remove(player_nickname)
             await db.execute('UPDATE teams SET roster=? WHERE id=?', ("\n".join(old_roster), old_team_id))
-        
+
         new_roster = [x.strip() for x in new_team_row[1].split('\n') if x.strip()]
         if player_nickname not in new_roster:
             new_roster.append(player_nickname)
@@ -396,7 +396,7 @@ async def perform_player_transfer(player_nickname, old_team_id, new_team_id, dat
 
         old_team_display = f"{old_team_row[2]} [{old_team_row[3]}]"
         new_team_display = f"{new_team_row[2]} [{new_team_row[3]}]"
-        
+
         await db.execute('INSERT INTO transfers (player_name, old_team, new_team, date) VALUES (?, ?, ?, ?)',
                          (player_nickname, old_team_display, new_team_display, date_str))
         await db.commit()
@@ -420,7 +420,7 @@ async def get_all_roster_players_paginated(page=0, limit=10):
         db.row_factory = aiosqlite.Row
         async with db.execute('SELECT roster, name, tag, id FROM teams') as cursor:
             rows = await cursor.fetchall()
-    
+
     all_players = []
     for row in rows:
         roster_text = row['roster']
@@ -432,7 +432,7 @@ async def get_all_roster_players_paginated(page=0, limit=10):
                 'team_tag': row['tag'],
                 'team_id': row['id']
             })
-            
+
     all_players.sort(key=lambda x: x['nickname'].lower())
     total_count = len(all_players)
     total_pages = math.ceil(total_count / limit) if limit > 0 else 1
@@ -452,21 +452,27 @@ async def get_player_achievements(player_nickname, current_team_id):
         # Ищем турниры с победителями
         async with db.execute("SELECT full_name, season, winners, prize_data FROM tournaments WHERE winners IS NOT NULL AND winners != '{}'") as cur:
             rows = await cur.fetchall()
-            
+
     for row in rows:
         try:
             winners = json.loads(row['winners'])
             # winners = {"1st": team_id, "2nd": team_id, ...}
-            
+
             # Разбираем призовой фонд для получения суммы
             prize_data = {}
             if row['prize_data']:
                 try: prize_data = json.loads(row['prize_data'])
                 except: pass
-            
-            dist = prize_data.get('distribution', {}) # {"1st": "4000", "2nd": "2500"}
+
+            dist_raw = prize_data.get('distribution', {})
+            if isinstance(dist_raw, dict):
+                dist = dist_raw
+            elif isinstance(dist_raw, list):
+                dist = {str(x.get('place')): str(x.get('amount')) for x in dist_raw if x and x.get('place') is not None}
+            else:
+                dist = {}
             curr = prize_data.get('currency', '')
-            
+
             for place, team_id in winners.items():
                 if int(team_id) == current_team_id:
                     # Определяем медаль
@@ -474,7 +480,7 @@ async def get_player_achievements(player_nickname, current_team_id):
                     if "1" in place: medal = "🥇"
                     elif "2" in place: medal = "🥈"
                     elif "3" in place: medal = "🥉"
-                    
+
                     # Ищем сумму приза для этого места
                     money = dist.get(place, "0")
                     if money != "0" and curr:
@@ -486,7 +492,7 @@ async def get_player_achievements(player_nickname, current_team_id):
                     achievements.append(ach.strip())
         except:
             continue
-            
+
     return achievements
 
 async def get_player_stats_and_rank(player_nickname):
@@ -496,7 +502,7 @@ async def get_player_stats_and_rank(player_nickname):
             all_games = [dict(row) for row in await cursor.fetchall()]
         async with db.execute('SELECT * FROM transfers WHERE player_name = ?', (player_nickname,)) as cursor:
             transfers = [dict(row) for row in await cursor.fetchall()]
-    
+
     meta = await get_player_metadata(player_nickname)
 
     global_scores = {}
@@ -512,10 +518,10 @@ async def get_player_stats_and_rank(player_nickname):
                 for p in players:
                     nick = p.get('nickname')
                     if not nick: continue
-                    
+
                     if nick not in global_scores:
                         global_scores[nick] = {'score': 0, 'k':0, 'a':0, 'd':0, 'matches':0, 'r_sum':0}
-                    
+
                     global_scores[nick]['k'] += p.get('K', 0)
                     global_scores[nick]['a'] += p.get('A', 0)
                     global_scores[nick]['d'] += p.get('D', 0)
@@ -529,10 +535,12 @@ async def get_player_stats_and_rank(player_nickname):
                         target_stats['r_sum'] += p.get('RATING', 0.0)
                         target_stats['matches'] += 1
                         target_stats['rounds'] += game['total_rounds']
-                        
+
                         if len(target_stats['last_games']) < 3:
-                             item = f"{game['map_name']} ({game['score_t1']}:{game['score_t2']}) #{game['id']} [T{game['tournament_id']}]"
-                             target_stats['last_games'].append(item)
+                            t1_tag = game.get('team1_tag') or "?"
+                            t2_tag = game.get('team2_tag') or "?"
+                            item = f"{game['map_name']} ({game['score_t1']}:{game['score_t2']}) [{t1_tag}] vs [{t2_tag}]"
+                            target_stats['last_games'].append(item)
         except: continue
 
     leaderboard = []
@@ -540,9 +548,9 @@ async def get_player_stats_and_rank(player_nickname):
         avg = s['r_sum'] / s['matches'] if s['matches'] > 0 else 0
         score = (s['k'] * 2) + (s['a'] * 1) - (s['d'] * 0.5) + (avg * 100)
         leaderboard.append({'name': nick, 'score': score})
-    
+
     leaderboard.sort(key=lambda x: x['score'], reverse=True)
-    
+
     rank = "-"
     player_score = 0
     for idx, item in enumerate(leaderboard):
@@ -550,7 +558,7 @@ async def get_player_stats_and_rank(player_nickname):
             rank = idx + 1
             player_score = item['score']
             break
-            
+
     _, _, _, all_roster = await get_all_roster_players_paginated(0, 99999)
     current_team = "Без команды"
     current_team_id = 0
@@ -567,10 +575,10 @@ async def get_player_stats_and_rank(player_nickname):
     svr = (rounds - target_stats['d']) / rounds
     impact = 2.13 * kpr + 0.42 * apr - 0.41
     if impact < 0: impact = 0
-    
+
     avg_r = target_stats['r_sum'] / target_stats['matches'] if target_stats['matches'] > 0 else 0
     kd = target_stats['k'] / target_stats['d'] if target_stats['d'] > 0 else target_stats['k']
-    
+
     # Получаем достижения
     achievements = await get_player_achievements(player_nickname, current_team_id)
 
@@ -606,7 +614,7 @@ async def get_top_players_list(limit=10):
         db.row_factory = aiosqlite.Row
         async with db.execute('SELECT stats_json FROM games') as cursor:
             all_games = [dict(row) for row in await cursor.fetchall()]
-            
+
     scores = {}
     for game in all_games:
         try:
@@ -622,13 +630,13 @@ async def get_top_players_list(limit=10):
                     scores[n]['r'] += p.get('RATING',0.0)
                     scores[n]['m'] += 1
         except: continue
-        
+
     final = []
     for n, s in scores.items():
         avg = s['r']/s['m'] if s['m']>0 else 0
         val = (s['k']*2) + (s['a']*1) - (s['d']*0.5) + (avg*100)
         final.append({'name': n, 'score': round(val, 2)})
-        
+
     final.sort(key=lambda x: x['score'], reverse=True)
     return final[:limit]
 
@@ -646,7 +654,7 @@ async def create_tournament(full_name, season, year, has_qualifiers, has_group_s
     mvp_json = json.dumps(mvp_data) if mvp_data else None
     async with aiosqlite.connect(DB_NAME) as db:
         await db.execute('''
-            INSERT INTO tournaments 
+            INSERT INTO tournaments
             (full_name, season, year, has_qualifiers, has_group_stage, logo_base64, prize_data, mvp_data, participants, winners)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', '{}')
         ''', (full_name, season, year, has_qualifiers, has_group_stage, logo_base64, prize_json, mvp_json))
@@ -658,7 +666,7 @@ async def delete_tournament(tour_id):
         await db.commit()
 
 async def update_tournament_field(tour_id, field, val):
-    allowed = ['full_name', 'season', 'year', 'logo_base64', 'prize_data', 'mvp_data'] 
+    allowed = ['full_name', 'season', 'year', 'logo_base64', 'prize_data', 'mvp_data']
     if field not in allowed: return False
     if field in ['prize_data', 'mvp_data'] and not isinstance(val, str) and val is not None:
         val = json.dumps(val)
@@ -673,54 +681,6 @@ async def get_tournament_by_id(tour_id):
         async with db.execute('SELECT * FROM tournaments WHERE id = ?', (tour_id,)) as cursor:
             row = await cursor.fetchone()
             return dict(row) if row else None
-
-async def add_team_to_tournament(tour_id, team_id):
-    async with aiosqlite.connect(DB_NAME) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute('SELECT participants FROM tournaments WHERE id=?', (tour_id,)) as cur:
-            row = await cur.fetchone()
-            if not row: return False
-            
-            try: parts = json.loads(row['participants'])
-            except: parts = []
-            
-            if team_id not in parts:
-                parts.append(team_id)
-                await db.execute('UPDATE tournaments SET participants=? WHERE id=?', (json.dumps(parts), tour_id))
-                await db.commit()
-                return True
-            return False 
-
-async def get_tournament_participants(tour_id):
-    async with aiosqlite.connect(DB_NAME) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute('SELECT participants FROM tournaments WHERE id=?', (tour_id,)) as cur:
-            row = await cur.fetchone()
-            if not row: return []
-            try: ids = json.loads(row['participants'])
-            except: return []
-            
-            if not ids: return []
-            
-            # Получаем имена команд
-            placeholders = ','.join('?' * len(ids))
-            query = f"SELECT id, name, tag FROM teams WHERE id IN ({placeholders})"
-            async with db.execute(query, tuple(ids)) as t_cur:
-                teams = [dict(r) for r in await t_cur.fetchall()]
-            return teams
-
-async def set_tournament_winner(tour_id, place, team_id):
-    async with aiosqlite.connect(DB_NAME) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute('SELECT winners FROM tournaments WHERE id=?', (tour_id,)) as cur:
-            row = await cur.fetchone()
-            if not row: return
-            try: winners = json.loads(row['winners'])
-            except: winners = {}
-            
-            winners[place] = team_id
-            await db.execute('UPDATE tournaments SET winners=? WHERE id=?', (json.dumps(winners), tour_id))
-            await db.commit()
 
 async def get_tournaments_paginated(page=0, limit=3, sort_by='alpha'):
     offset = page * limit
@@ -755,22 +715,22 @@ async def get_games_paginated(tour_id, page=0, limit=3, date_filter=None):
     offset = page * limit
     async with aiosqlite.connect(DB_NAME) as db:
         db.row_factory = aiosqlite.Row
-        
+
         where_sql = "WHERE tournament_id = ?"
         params = [tour_id]
         if date_filter:
             where_sql += " AND game_date = ?"
             params.append(date_filter)
-            
+
         async with db.execute(f'SELECT COUNT(*) FROM games {where_sql}', tuple(params)) as cur:
             total_count = (await cur.fetchone())[0]
-            
+
         query = f'SELECT * FROM games {where_sql} ORDER BY created_at DESC LIMIT ? OFFSET ?'
         params.extend([limit, offset])
-        
+
         async with db.execute(query, tuple(params)) as cursor:
             games = [dict(row) for row in await cursor.fetchall()]
-            
+
     total_pages = math.ceil(total_count / limit)
     return games, total_pages, total_count
 
